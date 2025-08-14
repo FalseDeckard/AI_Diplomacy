@@ -13,8 +13,8 @@ class Configuration(BaseSettings):
     SIMPLE_PROMPTS: bool = True
 
     # Default models for tasks
-    AI_DIPLOMACY_NARRATIVE_MODEL: str = "openrouter-google/gemini-2.5-flash-preview-05-20"
-    AI_DIPLOMACY_FORMATTER_MODEL: str = "openrouter-google/gemini-2.5-flash-preview-05-20"
+    AI_DIPLOMACY_NARRATIVE_MODEL: str = "together:meta-llama/Llama-3.3-70B-Instruct-Turbo" 
+    AI_DIPLOMACY_FORMATTER_MODEL: str = "together:meta-llama/Llama-3.3-70B-Instruct-Turbo" 
 
     # API Keys to be validated. Warns if they aren't present at startup, raises ValueError if you attempt to use them when they aren't present.
     DEEPSEEK_API_KEY: str | None = None

@@ -57,71 +57,62 @@ async def _call_model_async(statistical_summary: str, phase_key: str) -> str:
         response = await narrative_client.generate_response(
             prompt=user,
             temperature=0.7,  # Some creativity for narrative
-            # inject_random_seed=False,  # No need for random seed in narratives
+            inject_random_seed=False,  # No need for random seed in narratives
         )
 
         return response.strip() if response else "(Narrative generation failed - empty response)"
 
     except Exception as e:  # Broad – we only log and degrade gracefully
-        if config.ALLOW_NARRATION_FAILURE:
+        if config.ALLOW_NARATION_FAILURE:
             LOGGER.error(f"Narrative generation failed: {e}", exc_info=True)
             return "(Narrative generation failed)"
         else:
             raise e
 
 
-# def _call_openai(statistical_summary: str, phase_key: str) -> str:
-#     """Return a 2–4 sentence spectator-friendly narrative."""
-#     # Create a new event loop for this synchronous context
-#     loop = asyncio.new_event_loop()
-#     asyncio.set_event_loop(loop)
-#     result = loop.run_until_complete(_call_model_async(statistical_summary, phase_key))
-#     loop.close()
-#     return result
-import threading
-import asyncio
-
-def _run_in_new_loop(coro_fn, *args, **kwargs):
-    """Run an async fn in a dedicated thread+event loop and return its result."""
-    box = {"val": None, "err": None}
-
-    def worker():
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            # Создаём корутину внутри этого потока, чтобы не ловить
-            # 'coroutine was never awaited' при исключениях снаружи
-            box["val"] = loop.run_until_complete(coro_fn(*args, **kwargs))
-        except Exception as e:
-            box["err"] = e
-        finally:
-            try:
-                loop.close()
-            except Exception:
-                pass
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-    t.join()
-    if box["err"]:
-        raise box["err"]
-    return box["val"]
+async def _call_openai_async(statistical_summary: str, phase_key: str) -> str:
+    """Return a 2–4 sentence spectator-friendly narrative."""
+    return await _call_model_async(statistical_summary, phase_key)
 
 
 def _call_openai(statistical_summary: str, phase_key: str) -> str:
-    """Synchronous wrapper that is safe both inside and outside an event loop."""
+    """Synchronous wrapper for backward compatibility."""
     try:
+        # Check if we're in an async context
         loop = asyncio.get_running_loop()
-        in_loop = loop.is_running()
+        # Use asyncio.create_task to run in current loop
+        import concurrent.futures
+        import threading
+        
+        result = None
+        exception = None
+        
+        def run_async():
+            nonlocal result, exception
+            try:
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                result = new_loop.run_until_complete(_call_model_async(statistical_summary, phase_key))
+                new_loop.close()
+            except Exception as e:
+                exception = e
+        
+        thread = threading.Thread(target=run_async)
+        thread.start()
+        thread.join()
+        
+        if exception:
+            raise exception
+        return result
+        
     except RuntimeError:
-        in_loop = False
+        # No running loop, create a new one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(_call_model_async(statistical_summary, phase_key))
+        loop.close()
+        return result
 
-    if in_loop:
-        # Уже внутри другого event loop → уходим в отдельный поток/loop
-        return _run_in_new_loop(_call_model_async, statistical_summary, phase_key)
-
-    # В текущем потоке цикла нет → можно обычный asyncio.run
-    return asyncio.run(_call_model_async(statistical_summary, phase_key))
 
 # ---------------------------------------------------------------------------
 # Patch _generate_phase_summary

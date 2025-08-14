@@ -1098,7 +1098,7 @@ class TogetherAIClient(BaseModelClient):
         self.client = AsyncTogether(api_key=self.api_key)
         logger.info(f"[{self.model_name}] Initialized TogetherAI client for model: {self.model_name}")
 
-    async def generate_response(self, prompt: str) -> str:
+    async def generate_response(self, prompt: str, temperature: float = 0.7) -> str:
         """
         Generates a response from the Together AI model.
         """
@@ -1115,8 +1115,8 @@ class TogetherAIClient(BaseModelClient):
             response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=messages,
-                # Consider adding max_tokens, temperature, etc. as needed
-                # max_tokens=2048, # Example
+                temperature=temperature,
+                max_tokens=2048,
             )
 
             if not response.choices or not response.choices[0].message or response.choices[0].message.content is None:

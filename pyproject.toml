@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
   "anthropic>=0.54.0",
+  "asyncio>=4.0.0",
   "bcrypt>=4.3.0",
   "coloredlogs>=15.0.1",
   "dotenv>=0.9.9",
