@@ -196,7 +196,7 @@ async def main():
 
     # Handle phase summaries flag - import narrative module only if enabled
     if args.generate_phase_summaries:
-        import ai_diplomacy.narrative
+        import ai_diplomacy.narrative2
         logger.info("Phase summary generation enabled")
     else:
         logger.info("Phase summary generation disabled")

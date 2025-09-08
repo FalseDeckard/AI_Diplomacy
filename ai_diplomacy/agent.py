@@ -554,25 +554,46 @@ class DiplomacyAgent:
             relationships_updated = False
 
             if parsed_data:
-                # Fix 1: Be more robust about extracting the negotiation_summary field
-                diary_text_candidate = None
-                for key in ["negotiation_summary", "summary", "diary_entry"]:
-                    if key in parsed_data and isinstance(parsed_data[key], str) and parsed_data[key].strip():
-                        diary_text_candidate = parsed_data[key].strip()
-                        logger.info(f"[{self.power_name}] Successfully extracted '{key}' for diary.")
-                        break
-
-                if "intent" in parsed_data:
-                    if diary_text_candidate == None:
-                        diary_text_candidate = parsed_data["intent"]
-                    else:
-                        diary_text_candidate += "\nIntent: " + parsed_data["intent"]
-
-                if diary_text_candidate:
-                    diary_entry_text = diary_text_candidate
+                # Extract the comprehensive diary content from new enhanced format
+                diary_text_parts = []
+                
+                # Check for new enhanced fields first
+                enhanced_fields = [
+                    ("private_thoughts", "PRIVATE THOUGHTS"),
+                    ("strategic_plan", "STRATEGIC PLAN"),
+                    ("deception_analysis", "DECEPTION ANALYSIS"),
+                    ("future_positioning", "FUTURE POSITIONING")
+                ]
+                
+                for field, label in enhanced_fields:
+                    if field in parsed_data and isinstance(parsed_data[field], str) and parsed_data[field].strip():
+                        diary_text_parts.append(f"{label}: {parsed_data[field].strip()}")
+                
+                # Add traditional fields
+                if "negotiation_summary" in parsed_data and isinstance(parsed_data["negotiation_summary"], str) and parsed_data["negotiation_summary"].strip():
+                    diary_text_parts.append(f"NEGOTIATION SUMMARY: {parsed_data['negotiation_summary'].strip()}")
+                
+                if "intent" in parsed_data and isinstance(parsed_data["intent"], str) and parsed_data["intent"].strip():
+                    diary_text_parts.append(f"INTENT: {parsed_data['intent'].strip()}")
+                
+                # Combine all parts or fall back to legacy extraction
+                if diary_text_parts:
+                    diary_entry_text = "\n\n".join(diary_text_parts)
+                    logger.info(f"[{self.power_name}] Successfully extracted enhanced diary with {len(diary_text_parts)} sections.")
                 else:
-                    logger.warning(f"[{self.power_name}] Could not find valid summary field in diary response. Using fallback.")
-                    # Keep the default fallback text
+                    # Fallback to legacy extraction
+                    diary_text_candidate = None
+                    for key in ["negotiation_summary", "summary", "diary_entry"]:
+                        if key in parsed_data and isinstance(parsed_data[key], str) and parsed_data[key].strip():
+                            diary_text_candidate = parsed_data[key].strip()
+                            logger.info(f"[{self.power_name}] Fallback: extracted '{key}' for diary.")
+                            break
+                    
+                    if diary_text_candidate:
+                        diary_entry_text = diary_text_candidate
+                    else:
+                        logger.warning(f"[{self.power_name}] Could not find valid summary field in diary response. Using fallback.")
+                        # Keep the default fallback text
 
                 # Fix 2: Be more robust about extracting relationship updates
                 new_relationships = None
@@ -725,15 +746,42 @@ class DiplomacyAgent:
                         formatted_response = raw_response
                     response_data = self._extract_json_from_text(formatted_response)
                     if response_data:
-                        # Directly attempt to get 'order_summary' as per the prompt
-                        diary_text_candidate = response_data.get("order_summary")
-                        if isinstance(diary_text_candidate, str) and diary_text_candidate.strip():
-                            actual_diary_text = diary_text_candidate
+                        # Extract comprehensive order diary from enhanced format
+                        diary_text_parts = []
+                        
+                        # Check for new enhanced fields
+                        enhanced_fields = [
+                            ("tactical_reasoning", "TACTICAL REASONING"),
+                            ("strategic_calculations", "STRATEGIC CALCULATIONS"),
+                            ("risk_assessment", "RISK ASSESSMENT"),
+                            ("opponent_predictions", "OPPONENT PREDICTIONS"),
+                            ("future_positioning", "FUTURE POSITIONING"),
+                            ("coordination_analysis", "COORDINATION ANALYSIS")
+                        ]
+                        
+                        for field, label in enhanced_fields:
+                            if field in response_data and isinstance(response_data[field], str) and response_data[field].strip():
+                                diary_text_parts.append(f"{label}: {response_data[field].strip()}")
+                        
+                        # Add order summary
+                        if "order_summary" in response_data and isinstance(response_data["order_summary"], str) and response_data["order_summary"].strip():
+                            diary_text_parts.append(f"ORDER SUMMARY: {response_data['order_summary'].strip()}")
+                        
+                        # Combine parts or fall back to legacy
+                        if diary_text_parts:
+                            actual_diary_text = "\n\n".join(diary_text_parts)
                             success_status = "TRUE"
-                            logger.info(f"[{self.power_name}] Successfully extracted 'order_summary' for order diary entry.")
+                            logger.info(f"[{self.power_name}] Successfully extracted enhanced order diary with {len(diary_text_parts)} sections.")
                         else:
-                            logger.warning(f"[{self.power_name}] 'order_summary' missing, invalid, or empty. Value was: {diary_text_candidate}")
-                            success_status = "FALSE"  # Explicitly set false if not found or invalid
+                            # Fallback to legacy extraction
+                            diary_text_candidate = response_data.get("order_summary")
+                            if isinstance(diary_text_candidate, str) and diary_text_candidate.strip():
+                                actual_diary_text = diary_text_candidate
+                                success_status = "TRUE"
+                                logger.info(f"[{self.power_name}] Fallback: extracted 'order_summary' for order diary entry.")
+                            else:
+                                logger.warning(f"[{self.power_name}] 'order_summary' missing, invalid, or empty. Value was: {diary_text_candidate}")
+                                success_status = "FALSE"
                     else:
                         # response_data is None (JSON parsing failed)
                         logger.warning(f"[{self.power_name}] Failed to parse JSON from order diary LLM response.")

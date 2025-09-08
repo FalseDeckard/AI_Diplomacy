@@ -24,6 +24,10 @@ class Configuration(BaseSettings):
     OPENROUTER_API_KEY: str | None = None
     TOGETHER_API_KEY: str | None = None
 
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
     def __init__(self, power_name: Optional[PowerEnum] = None, **kwargs):
         super().__init__(**kwargs)
         # Add a '-POWER' to the end of the file name if it's for a specific power
@@ -44,6 +48,7 @@ class Configuration(BaseSettings):
             "ANTHROPIC_API_KEY",
             "GEMINI_API_KEY",
             "OPENROUTER_API_KEY",
+            "TOGETHER_API_KEY",
         ]
 
         for key in api_keys:

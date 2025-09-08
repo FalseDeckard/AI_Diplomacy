@@ -56,8 +56,8 @@ async def _call_model_async(statistical_summary: str, phase_key: str) -> str:
         # Use the client's generate_response method
         response = await narrative_client.generate_response(
             prompt=user,
-            temperature=0.7,  # Some creativity for narrative
-            inject_random_seed=False,  # No need for random seed in narratives
+            temperature=0.7  # Some creativity for narrative
+            #inject_random_seed=False,  # No need for random seed in narratives
         )
 
         return response.strip() if response else "(Narrative generation failed - empty response)"

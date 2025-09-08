@@ -1,0 +1,40 @@
+ORDER DIARY ENTRY
+Power: {power_name}
+Phase: {current_phase}
+
+ORDERS ISSUED
+{orders_list_str}
+
+CURRENT STATUS
+Game State:
+{board_state_str}
+
+Goals:
+{agent_goals}
+
+Relationships:
+{agent_relationships}
+
+TASK
+Write a detailed diary entry reflecting on your orders and strategic thinking. Include:
+
+1. TACTICAL REASONING: Why did you choose these specific orders? What threats were you responding to?
+2. STRATEGIC CALCULATIONS: What are you trying to achieve with these moves? How do they fit your long-term plan?
+3. RISK ASSESSMENT: What could go wrong with these orders? What are your backup plans?
+4. OPPONENT ANALYSIS: What do you expect other powers to do? How will they react to your moves?
+5. FUTURE IMPLICATIONS: How do these orders position you for next phase? What opportunities do they create?
+6. DECEPTION & COORDINATION: Are you fulfilling promises or breaking them? Are you deceiving anyone?
+
+RESPONSE FORMAT
+Return ONLY a JSON object with this structure:
+{
+"tactical_reasoning": "Detailed explanation of why you chose these specific orders and what immediate threats/opportunities they address",
+"strategic_calculations": "How these orders fit your broader strategic plan and what you're trying to achieve long-term",
+"risk_assessment": "What could go wrong with these orders? What contingencies do you have?",
+"opponent_predictions": "What you expect other powers to do this phase and how they might react to your moves",
+"future_positioning": "How these orders set you up for the next phase and what opportunities they create or foreclose",
+"coordination_analysis": "Are you fulfilling agreements, breaking promises, or deceiving anyone? What are the diplomatic implications?",
+"order_summary": "Brief summary of orders and strategic intent"
+}
+
+Do not include any text outside the JSON.
