@@ -12,6 +12,8 @@ __pycache__/
 .notes
 .idea
 .Python
+.vscode
+.github
 env/
 venv-dip/
 build/
@@ -161,3 +163,5 @@ model_power_statistics.csv
 bct.txt
 analysis_summary.txt
 analysis_summary_debug.txt
+
+.DS_Store
