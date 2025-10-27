@@ -22,7 +22,10 @@ from together.error import APIError as TogetherAPIError  # For specific error ha
 
 from config import config
 from .game_history import GameHistory
-from .utils import load_prompt, run_llm_and_log, log_llm_response, generate_random_seed, get_prompt_path
+from .utils import load_prompt, run_llm_and_log, log_llm_response, get_prompt_path
+from .utils import log_llm_request_jsonl
+from .utils import log_llm_output_jsonl
+from .utils import log_llm_io_jsonl
 
 # Import DiplomacyAgent for type hinting if needed, but avoid circular import if possible
 from .prompt_constructor import construct_order_generation_prompt, build_context_prompt
@@ -49,12 +52,18 @@ class BaseModelClient:
       - get_conversation_reply(power_name, conversation_so_far, game_phase) -> str
     """
 
-    def __init__(self, model_name: str, prompts_dir: Optional[str] = None):
+    def __init__(self, model_name: str, prompts_dir: Optional[str] = None, disable_logging: bool = False):
         self.model_name = model_name
         self.prompts_dir = prompts_dir
+        self.disable_logging = disable_logging  # Flag to disable JSONL logging for meta-analysis tools
         # Load a default initially, can be overwritten by set_system_prompt
         self.system_prompt = load_prompt("system_prompt.txt", prompts_dir=self.prompts_dir)
         self.max_tokens = 16000  # default unless overridden
+        # Context for logging (power/phase/response_type), set by higher-level calls
+        self._log_ctx: Dict[str, Optional[str]] = {"power": None, "phase": None, "response_type": None}
+
+    def set_log_context(self, *, power: Optional[str], phase: Optional[str], response_type: Optional[str]):
+        self._log_ctx = {"power": power, "phase": phase, "response_type": response_type}
 
     def set_system_prompt(self, content: str):
         """Allows updating the system prompt after initialization."""
@@ -113,13 +122,14 @@ class BaseModelClient:
 
         try:
             # Call LLM using the logging wrapper
+            self.set_log_context(power=power_name, phase=phase, response_type="order")
             raw_response = await run_llm_and_log(
                 client=self,
                 prompt=prompt,
                 power_name=power_name,
                 phase=phase,
                 response_type="order",  # Context for run_llm_and_log's own error logging
-                temperature=0,
+                temperature=config.PLAYER_TEMPERATURE,
             )
             logger.debug(f"[{self.model_name}] Raw LLM response for {power_name} orders:\n{raw_response}")
 
@@ -413,7 +423,7 @@ class BaseModelClient:
     ) -> str:
         instructions = load_prompt("planning_instructions.txt", prompts_dir=self.prompts_dir)
 
-        context = self.build_context_prompt(
+        context = build_context_prompt(
             game,
             board_state,
             power_name,
@@ -421,7 +431,7 @@ class BaseModelClient:
             game_history,
             agent_goals=agent_goals,
             agent_relationships=agent_relationships,
-            agent_private_diary=agent_private_diary_str,  # Pass diary string
+            agent_private_diary=agent_private_diary_str,
             prompts_dir=self.prompts_dir,
         )
 
@@ -512,12 +522,14 @@ class BaseModelClient:
         )
 
         # Call LLM using the logging wrapper
+        self.set_log_context(power=power_name, phase=game_phase, response_type="plan_reply")
         raw_response = await run_llm_and_log(
             client=self,
             prompt=prompt,
             power_name=power_name,
             phase=game_phase,  # Use game_phase for logging
             response_type="plan_reply",  # Changed from 'plan' to avoid confusion
+            temperature=config.PLAYER_TEMPERATURE,
         )
         logger.debug(f"[{self.model_name}] Raw LLM response for {power_name} planning reply:\n{raw_response}")
         return raw_response
@@ -558,12 +570,14 @@ class BaseModelClient:
 
             logger.debug(f"[{self.model_name}] Conversation prompt for {power_name}:\n{raw_input_prompt}")
 
+            self.set_log_context(power=power_name, phase=game_phase, response_type="negotiation")
             raw_response = await run_llm_and_log(
                 client=self,
                 prompt=raw_input_prompt,
                 power_name=power_name,
                 phase=game_phase,
                 response_type="negotiation",  # For run_llm_and_log's internal context
+                temperature=config.PLAYER_TEMPERATURE,
             )
             logger.debug(f"[{self.model_name}] Raw LLM response for {power_name}:\n{raw_response}")
 
@@ -710,7 +724,7 @@ class BaseModelClient:
         # For simplicity, let's pass empty if not strictly needed by context for planning.
         possible_orders_for_context = {}  # game.get_all_possible_orders() if needed by context
 
-        context_prompt = self.build_context_prompt(
+        context_prompt = build_context_prompt(
             game,
             board_state,
             power_name,
@@ -732,12 +746,14 @@ class BaseModelClient:
 
         try:
             # Use run_llm_and_log for the actual LLM call
+            self.set_log_context(power=power_name, phase=game.current_short_phase, response_type="plan_generation")
             raw_plan_response = await run_llm_and_log(
                 client=self,  # Pass self (the client instance)
                 prompt=full_prompt,
                 power_name=power_name,
                 phase=game.current_short_phase,
                 response_type="plan_generation",  # More specific type for run_llm_and_log context
+                temperature=config.PLAYER_TEMPERATURE,
             )
             logger.debug(f"[{self.model_name}] Raw LLM response for {power_name} plan generation:\n{raw_plan_response}")
             # No parsing needed for the plan, return the raw string
@@ -776,8 +792,9 @@ class OpenAIClient(BaseModelClient):
         prompts_dir: Optional[str] = None,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        disable_logging: bool = False,
     ):
-        super().__init__(model_name, prompts_dir=prompts_dir)
+        super().__init__(model_name, prompts_dir=prompts_dir, disable_logging=disable_logging)
 
         self.base_url = base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
 
@@ -794,8 +811,33 @@ class OpenAIClient(BaseModelClient):
         inject_random_seed: bool = True,
     ) -> str:
         try:
-            system_prompt_content = f"{generate_random_seed()}\n\n{self.system_prompt}" if inject_random_seed else self.system_prompt
+            system_prompt_content = self.system_prompt
             prompt_with_cta = f"{prompt}\n\nPROVIDE YOUR RESPONSE BELOW:"
+
+            # Generate request ID (used for logging correlation)
+            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            
+            # Log request payload
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                _payload = {
+                    "endpoint": f"{self.base_url}/chat/completions",
+                    "messages": [
+                        {"role": "system", "content": system_prompt_content},
+                        {"role": "user", "content": prompt_with_cta},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": self.max_tokens,
+                }
+                log_llm_request_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_requests.jsonl"),
+                    provider="openai",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
 
             response = await self.client.chat.completions.create(
                 model=self.model_name,
@@ -810,13 +852,49 @@ class OpenAIClient(BaseModelClient):
             if not response or not response.choices or not response.choices[0].message.content:
                 raise ValueError(f"[{self.model_name}] LLM returned an empty or invalid response.")
 
-            return response.choices[0].message.content.strip()
+            _text = response.choices[0].message.content.strip()
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                log_llm_output_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                    provider="openai",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+                log_llm_io_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                    provider="openai",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+
+            return _text
 
         except json.JSONDecodeError as json_err:
             logger.error(f"[{self.model_name}] JSON decode error: {json_err}")
             raise
         except Exception as e:
+            msg = str(e)
             logger.error(f"[{self.model_name}] Unexpected error: {e}", exc_info=True)
+            # If this model rejects max_tokens (e.g., GPT-5 family), fallback to Responses API automatically
+            if "Unsupported parameter" in msg and "max_tokens" in msg:
+                try:
+                    fallback = OpenAIResponsesClient(self.model_name, prompts_dir=self.prompts_dir if hasattr(self, 'prompts_dir') else None, api_key=self.api_key)
+                    # Preserve system prompt and token limits
+                    fallback.set_system_prompt(self.system_prompt)
+                    fallback.max_tokens = self.max_tokens
+                    logger.warning(f"[{self.model_name}] Retrying via Responses API due to max_tokens rejection.")
+                    return await fallback.generate_response(prompt, temperature=temperature, inject_random_seed=inject_random_seed)
+                except Exception as e2:
+                    logger.error(f"[{self.model_name}] Responses API fallback failed: {e2}", exc_info=True)
             raise
 
 
@@ -825,17 +903,37 @@ class ClaudeClient(BaseModelClient):
     For 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', etc.
     """
 
-    def __init__(self, model_name: str, prompts_dir: Optional[str] = None):
-        super().__init__(model_name, prompts_dir=prompts_dir)
+    def __init__(self, model_name: str, prompts_dir: Optional[str] = None, disable_logging: bool = False):
+        super().__init__(model_name, prompts_dir=prompts_dir, disable_logging=disable_logging)
         self.client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
     async def generate_response(self, prompt: str, temperature: float = 0.0, inject_random_seed: bool = True) -> str:
         # Updated Claude messages format
         try:
             system_prompt_content = self.system_prompt
-            if inject_random_seed:
-                random_seed = generate_random_seed()
-                system_prompt_content = f"{random_seed}\n\n{self.system_prompt}"
+
+            # Generate request ID (used for logging correlation)
+            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            
+            # Log request payload
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                _payload = {
+                    "endpoint": "messages.create",
+                    "system": system_prompt_content,
+                    "messages": [{"role": "user", "content": prompt + "\n\nPROVIDE YOUR RESPONSE BELOW:"}],
+                    "temperature": temperature,
+                    "max_tokens": self.max_tokens,
+                }
+                log_llm_request_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_requests.jsonl"),
+                    provider="anthropic",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
 
             response = await self.client.messages.create(
                 model=self.model_name,
@@ -846,7 +944,30 @@ class ClaudeClient(BaseModelClient):
             )
             if not response.content or not response.content[0].text:
                 raise ValueError(f"[{self.model_name}] LLM returned an empty or invalid response.")
-            return response.content[0].text.strip()
+            _text = response.content[0].text.strip()
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                log_llm_output_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                    provider="anthropic",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+                log_llm_io_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                    provider="anthropic",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+            return _text
         except json.JSONDecodeError as json_err:
             logger.error(f"[{self.model_name}] JSON decoding failed in generate_response: {json_err}")
             raise
@@ -860,8 +981,8 @@ class GeminiClient(BaseModelClient):
     For 'gemini-1.5-flash' or other Google Generative AI models.
     """
 
-    def __init__(self, model_name: str, prompts_dir: Optional[str] = None):
-        super().__init__(model_name, prompts_dir=prompts_dir)
+    def __init__(self, model_name: str, prompts_dir: Optional[str] = None, disable_logging: bool = False):
+        super().__init__(model_name, prompts_dir=prompts_dir, disable_logging=disable_logging)
         # Configure and get the model (corrected initialization)
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
@@ -872,14 +993,34 @@ class GeminiClient(BaseModelClient):
 
     async def generate_response(self, prompt: str, temperature: float = 0.0, inject_random_seed: bool = True) -> str:
         system_prompt_content = self.system_prompt
-        if inject_random_seed:
-            random_seed = generate_random_seed()
-            system_prompt_content = f"{random_seed}\n\n{self.system_prompt}"
 
         full_prompt = system_prompt_content + prompt + "\n\nPROVIDE YOUR RESPONSE BELOW:"
 
         try:
             generation_config = genai.types.GenerationConfig(temperature=temperature, max_output_tokens=self.max_tokens)
+            
+            # Generate request ID (used for logging correlation)
+            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            
+            # Log request payload
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                _payload = {
+                    "endpoint": "generate_content",
+                    "contents": full_prompt,
+                    "temperature": temperature,
+                    "max_output_tokens": self.max_tokens,
+                }
+                log_llm_request_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_requests.jsonl"),
+                    provider="gemini",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+
             response = await self.client.generate_content_async(
                 contents=full_prompt,
                 generation_config=generation_config,
@@ -887,7 +1028,30 @@ class GeminiClient(BaseModelClient):
 
             if not response or not response.text:
                 raise ValueError(f"[{self.model_name}] LLM returned an empty or invalid response.")
-            return response.text.strip()
+            _text = response.text.strip()
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                log_llm_output_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                    provider="gemini",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+                log_llm_io_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                    provider="gemini",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+            return _text
         except Exception as e:
             logger.error(f"[{self.model_name}] Error in Gemini generate_response: {e}")
             raise
@@ -898,8 +1062,8 @@ class DeepSeekClient(BaseModelClient):
     For DeepSeek R1 'deepseek-reasoner'
     """
 
-    def __init__(self, model_name: str, prompts_dir: Optional[str] = None):
-        super().__init__(model_name, prompts_dir=prompts_dir)
+    def __init__(self, model_name: str, prompts_dir: Optional[str] = None, disable_logging: bool = False):
+        super().__init__(model_name, prompts_dir=prompts_dir, disable_logging=disable_logging)
         self.api_key = os.environ.get("DEEPSEEK_API_KEY")
         self.client = AsyncDeepSeekOpenAI(api_key=self.api_key, base_url="https://api.deepseek.com/")
 
@@ -909,9 +1073,32 @@ class DeepSeekClient(BaseModelClient):
             prompt_with_cta = prompt + "\n\nPROVIDE YOUR RESPONSE BELOW:"
 
             system_prompt_content = self.system_prompt
-            if inject_random_seed:
-                random_seed = generate_random_seed()
-                system_prompt_content = f"{random_seed}\n\n{self.system_prompt}"
+
+            # Generate request ID (used for logging correlation)
+            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            
+            # Log request payload
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                _payload = {
+                    "endpoint": "chat.completions",
+                    "messages": [
+                        {"role": "system", "content": system_prompt_content},
+                        {"role": "user", "content": prompt_with_cta},
+                    ],
+                    "stream": False,
+                    "temperature": temperature,
+                    "max_tokens": self.max_tokens,
+                }
+                log_llm_request_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_requests.jsonl"),
+                    provider="deepseek",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
 
             response = await self.client.chat.completions.create(
                 model=self.model_name,
@@ -930,6 +1117,28 @@ class DeepSeekClient(BaseModelClient):
                 raise ValueError(f"[{self.model_name}] LLM returned an empty or invalid response.")
 
             content = response.choices[0].message.content.strip()
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                log_llm_output_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                    provider="deepseek",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    output_text=content,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+                log_llm_io_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                    provider="deepseek",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    output_text=content,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
             return content
 
         except Exception as e:
@@ -943,8 +1152,8 @@ class OpenAIResponsesClient(BaseModelClient):
     This client makes direct HTTP requests to the v1/responses endpoint.
     """
 
-    def __init__(self, model_name: str, prompts_dir: Optional[str] = None, api_key: Optional[str] = None):
-        super().__init__(model_name, prompts_dir=prompts_dir)
+    def __init__(self, model_name: str, prompts_dir: Optional[str] = None, api_key: Optional[str] = None, disable_logging: bool = False):
+        super().__init__(model_name, prompts_dir=prompts_dir, disable_logging=disable_logging)
         if api_key:
             self.api_key = api_key
         else:
@@ -959,56 +1168,197 @@ class OpenAIResponsesClient(BaseModelClient):
             # The Responses API uses a different format than chat completions
             # Combine system prompt and user prompt into a single input
             system_prompt_content = self.system_prompt
-            if inject_random_seed:
-                random_seed = generate_random_seed()
-                system_prompt_content = f"{random_seed}\n\n{self.system_prompt}"
 
-            full_prompt = f"{system_prompt_content}\n\n{prompt}\n\nPROVIDE YOUR RESPONSE BELOW:"
-
-            # Prepare the request payload
+            # Build Responses API content as structured roles/parts
+            user_prompt = f"{prompt}\n\nPROVIDE YOUR RESPONSE BELOW:"
             payload = {
                 "model": self.model_name,
-                "input": full_prompt,
-                "temperature": temperature,
-                "max_tokens": self.max_tokens,
+                "input": [
+                    {
+                        "role": "system",
+                        "content": [
+                            {"type": "input_text", "text": system_prompt_content}
+                        ]
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": user_prompt}
+                        ]
+                    }
+                ]
             }
+            # Token cap: try max_completion_tokens first, with fallback on 400
+            token_key_primary = "max_completion_tokens"
+            token_key_alt = "max_output_tokens"
+            if isinstance(self.max_tokens, int) and self.max_tokens > 0:
+                payload[token_key_primary] = self.max_tokens
 
             headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
 
             # Make the API call using aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.base_url, json=payload, headers=headers) as response:
-                    response.raise_for_status()  # Will raise for non-2xx responses
-                    response_data = await response.json()
+            timeout = aiohttp.ClientTimeout(total=90, connect=15, sock_connect=15, sock_read=75)
+            
+            # Generate request ID (used for logging correlation)
+            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            
+            # Log request payload
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                log_llm_request_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_requests.jsonl"),
+                    provider="openai-responses",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload={**payload},
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async def _post_payload(p: dict):
+                    async with session.post(self.base_url, json=p, headers=headers) as response:
+                        text_body = await response.text()
+                        if response.status >= 400:
+                            # Try to parse JSON body for clearer diagnostics
+                            try:
+                                err_json = json.loads(text_body)
+                            except Exception:
+                                err_json = {"raw": text_body[:1000]}
+                            raise aiohttp.ClientResponseError(
+                                request_info=response.request_info,
+                                history=response.history,
+                                status=response.status,
+                                message=str(err_json),
+                                headers=response.headers,
+                            )
+                        try:
+                            return json.loads(text_body)
+                        except Exception:
+                            return {"output_text": text_body}
+
+                # Simple retry for timeouts and 5xx
+                async def _call_with_retry(p: dict, max_retries: int = 2):
+                    last_err = None
+                    for attempt in range(max_retries + 1):
+                        try:
+                            return await asyncio.wait_for(_post_payload(p), timeout=95)
+                        except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e_to:
+                            last_err = e_to
+                            if attempt < max_retries:
+                                await asyncio.sleep(1 + attempt)
+                                continue
+                            raise
+                        except aiohttp.ClientResponseError as e_resp:
+                            # retry on 429/5xx only
+                            if e_resp.status in (429, 500, 502, 503, 504) and attempt < max_retries:
+                                await asyncio.sleep(1 + attempt)
+                                last_err = e_resp
+                                continue
+                            raise
+                    raise last_err or RuntimeError("Unknown error in _call_with_retry")
+
+                try:
+                    response_data = await _call_with_retry(payload)
+                except aiohttp.ClientResponseError as e:
+                    # If server complains about token field name, flip to alt key once
+                    msg = e.message or ""
+                    if token_key_primary in msg and "Unsupported" in msg or "unsupported" in msg.lower():
+                        if token_key_primary in payload:
+                            payload.pop(token_key_primary, None)
+                            payload[token_key_alt] = self.max_tokens
+                            response_data = await _call_with_retry(payload)
+                        else:
+                            raise
+                    else:
+                        raise
 
                     # Extract the text from the nested response structure
-                    try:
-                        outputs = response_data.get("output", [])
-                        if len(outputs) < 2:
-                            raise ValueError(f"[{self.model_name}] Unexpected output structure: 'output' list has < 2 items.")
+                    # 1) Direct 'output_text'
+                    if isinstance(response_data, dict) and response_data.get("output_text"):
+                        _text = str(response_data.get("output_text")).strip()
+                        if config and getattr(config, "log_file_path", None):
+                            log_llm_output_jsonl(
+                                log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                                provider="openai-responses",
+                                model=self.model_name,
+                                request_id=_req_id,
+                                output_text=_text,
+                            )
+                            log_llm_io_jsonl(
+                                log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                                provider="openai-responses",
+                                model=self.model_name,
+                                request_id=_req_id,
+                                payload={**payload},
+                                output_text=_text,
+                            )
+                        return _text
 
-                        message_output = outputs[1]
-                        if message_output.get("type") != "message":
-                            raise ValueError(f"[{self.model_name}] Expected 'message' type in output[1], got '{message_output.get('type')}'.")
+                    # 2) Newer Responses: top-level 'output' with message parts
+                    outputs = response_data.get("output") if isinstance(response_data, dict) else None
+                    if isinstance(outputs, list):
+                        texts = []
+                        for item in outputs:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "message":
+                                for part in item.get("content", []) or []:
+                                    if isinstance(part, dict) and part.get("type") in ("output_text", "text"):
+                                        if part.get("text"):
+                                            texts.append(part.get("text"))
+                        if texts:
+                            _text = "\n".join(t.strip() for t in texts if t).strip()
+                            if config and getattr(config, "log_file_path", None):
+                                log_llm_output_jsonl(
+                                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                                    provider="openai-responses",
+                                    model=self.model_name,
+                                    request_id=_req_id,
+                                    output_text=_text,
+                                    power=self._log_ctx.get("power"),
+                                    phase=self._log_ctx.get("phase"),
+                                    response_type=self._log_ctx.get("response_type"),
+                                )
+                                log_llm_io_jsonl(
+                                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                                    provider="openai-responses",
+                                    model=self.model_name,
+                                    request_id=_req_id,
+                                    payload={**payload},
+                                    output_text=_text,
+                                    power=self._log_ctx.get("power"),
+                                    phase=self._log_ctx.get("phase"),
+                                    response_type=self._log_ctx.get("response_type"),
+                                )
+                            return _text
 
-                        content_list = message_output.get("content", [])
-                        if not content_list:
-                            raise ValueError(f"[{self.model_name}] Empty 'content' list in message output.")
+                    # 3) Fallback: Chat-like 'choices'
+                    choices = response_data.get("choices") if isinstance(response_data, dict) else None
+                    if isinstance(choices, list) and choices:
+                        msg = choices[0].get("message", {})
+                        content = msg.get("content") if isinstance(msg, dict) else None
+                        if content:
+                            _text = str(content).strip()
+                            if config and getattr(config, "log_file_path", None):
+                                log_llm_output_jsonl(
+                                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                                    provider="openai-responses",
+                                    model=self.model_name,
+                                    request_id=_req_id,
+                                    output_text=_text,
+                                )
+                                log_llm_io_jsonl(
+                                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                                    provider="openai-responses",
+                                    model=self.model_name,
+                                    request_id=_req_id,
+                                    payload={**payload},
+                                    output_text=_text,
+                                )
+                            return _text
 
-                        text_content = ""
-                        for content_item in content_list:
-                            if content_item.get("type") == "output_text":
-                                text_content = content_item.get("text", "")
-                                break
-
-                        if not text_content:
-                            raise ValueError(f"[{self.model_name}] No 'output_text' found in content or it was empty.")
-
-                        return text_content.strip()
-
-                    except (KeyError, IndexError, TypeError) as e:
-                        # Wrap parsing error in a more informative exception
-                        raise ValueError(f"[{self.model_name}] Error parsing response structure: {e}") from e
+                    raise ValueError(f"[{self.model_name}] Unrecognized Responses API structure: {str(response_data)[:200]}")
 
         except aiohttp.ClientError as e:
             logger.error(f"[{self.model_name}] HTTP client error in generate_response: {e}")
@@ -1023,14 +1373,14 @@ class OpenRouterClient(BaseModelClient):
     For OpenRouter models, with default being 'openrouter/quasar-alpha'
     """
 
-    def __init__(self, model_name: str = "openrouter/quasar-alpha", prompts_dir: Optional[str] = None):
+    def __init__(self, model_name: str = "openrouter/quasar-alpha", prompts_dir: Optional[str] = None, disable_logging: bool = False):
         # Allow specifying just the model identifier or the full path
         if not model_name.startswith("openrouter/") and "/" not in model_name:
             model_name = f"openrouter/{model_name}"
         if model_name.startswith("openrouter-"):
             model_name = model_name.replace("openrouter-", "")
 
-        super().__init__(model_name, prompts_dir=prompts_dir)
+        super().__init__(model_name, prompts_dir=prompts_dir, disable_logging=disable_logging)
         self.api_key = os.environ.get("OPENROUTER_API_KEY")
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY environment variable is required")
@@ -1046,11 +1396,33 @@ class OpenRouterClient(BaseModelClient):
             prompt_with_cta = prompt + "\n\nPROVIDE YOUR RESPONSE BELOW:"
 
             system_prompt_content = self.system_prompt
-            if inject_random_seed:
-                random_seed = generate_random_seed()
-                system_prompt_content = f"{random_seed}\n\n{self.system_prompt}"
 
             # Prepare standard OpenAI-compatible request
+            # Generate request ID (used for logging correlation)
+            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            
+            # Log request payload
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                _payload = {
+                    "endpoint": "chat.completions",
+                    "messages": [
+                        {"role": "system", "content": system_prompt_content},
+                        {"role": "user", "content": prompt_with_cta},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": self.max_tokens,
+                }
+                log_llm_request_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_requests.jsonl"),
+                    provider="openrouter",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+
             response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[{"role": "system", "content": system_prompt_content}, {"role": "user", "content": prompt_with_cta}],
@@ -1062,6 +1434,28 @@ class OpenRouterClient(BaseModelClient):
                 raise ValueError(f"[{self.model_name}] LLM returned an empty or invalid response.")
 
             content = response.choices[0].message.content.strip()
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                log_llm_output_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                    provider="openrouter",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    output_text=content,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+                log_llm_io_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                    provider="openrouter",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    output_text=content,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
             return content
 
         except Exception as e:
@@ -1087,8 +1481,8 @@ class TogetherAIClient(BaseModelClient):
     Model names should be passed without the 'together-' prefix.
     """
 
-    def __init__(self, model_name: str, prompts_dir: Optional[str] = None):
-        super().__init__(model_name, prompts_dir=prompts_dir)  # model_name here is the actual Together AI model identifier
+    def __init__(self, model_name: str, prompts_dir: Optional[str] = None, disable_logging: bool = False):
+        super().__init__(model_name, prompts_dir=prompts_dir, disable_logging=disable_logging)  # model_name here is the actual Together AI model identifier
         self.api_key = os.environ.get("TOGETHER_API_KEY")
         if not self.api_key:
             raise ValueError("TOGETHER_API_KEY environment variable is required for TogetherAIClient")
@@ -1112,6 +1506,29 @@ class TogetherAIClient(BaseModelClient):
         try:
             # Ensure the model name used here is the one intended for the API,
             # which is self.model_name as set by BaseModelClient.__init__
+            
+            # Generate request ID (used for logging correlation)
+            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            
+            # Log request payload
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                _payload = {
+                    "endpoint": "chat.completions",
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": 2048,
+                }
+                log_llm_request_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_requests.jsonl"),
+                    provider="together",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+
             response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=messages,
@@ -1123,7 +1540,30 @@ class TogetherAIClient(BaseModelClient):
                 raise ValueError(f"[{self.model_name}] LLM returned an empty or invalid response.")
 
             content = response.choices[0].message.content
-            return content.strip()
+            _text = content.strip()
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                log_llm_output_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                    provider="together",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+                log_llm_io_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                    provider="together",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=_payload,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+            return _text
         except TogetherAPIError as e:
             logger.error(f"[{self.model_name}] Together AI API error: {e}", exc_info=True)
             raise
@@ -1149,8 +1589,9 @@ class RequestsOpenAIClient(BaseModelClient):
         prompts_dir: Optional[str] = None,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        disable_logging: bool = False,
     ):
-        super().__init__(model_name, prompts_dir=prompts_dir)
+        super().__init__(model_name, prompts_dir=prompts_dir, disable_logging=disable_logging)
 
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
@@ -1177,7 +1618,7 @@ class RequestsOpenAIClient(BaseModelClient):
         temperature: float = 0.0,
         inject_random_seed: bool = True,
     ) -> str:
-        system_prompt_content = f"{generate_random_seed()}\n\n{self.system_prompt}" if inject_random_seed else self.system_prompt
+        system_prompt_content = self.system_prompt
 
         payload = {
             "model": self.model_name,
@@ -1190,11 +1631,49 @@ class RequestsOpenAIClient(BaseModelClient):
         }
 
         loop = asyncio.get_running_loop()
+        
+        # Generate request ID (used for logging correlation)
+        _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+        
         try:
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                log_llm_request_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_requests.jsonl"),
+                    provider="openai",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=payload,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
             data = await loop.run_in_executor(None, self._post_sync, payload)
             if not data.get("choices") or not data["choices"][0].get("message") or not data["choices"][0]["message"].get("content"):
                 raise ValueError(f"[{self.model_name}] LLM returned an empty or invalid response.")
-            return data["choices"][0]["message"]["content"].strip()
+            _text = data["choices"][0]["message"]["content"].strip()
+            if not self.disable_logging and config and getattr(config, "log_file_path", None):
+                log_llm_output_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                    provider="openai",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+                log_llm_io_jsonl(
+                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                    provider="openai",
+                    model=self.model_name,
+                    request_id=_req_id,
+                    payload=payload,
+                    output_text=_text,
+                    power=self._log_ctx.get("power"),
+                    phase=self._log_ctx.get("phase"),
+                    response_type=self._log_ctx.get("response_type"),
+                )
+            return _text
         except (KeyError, IndexError, TypeError) as e:
             logger.error(f"[{self.model_name}] Bad response format: {e}", exc_info=True)
             raise
@@ -1244,7 +1723,7 @@ class Prefix(StrEnum):
     OPENROUTER        = "openrouter"
     TOGETHER          = "together"
 
-def load_model_client(model_id: str, prompts_dir: Optional[str] = None) -> BaseModelClient:
+def load_model_client(model_id: str, prompts_dir: Optional[str] = None, disable_logging: bool = False) -> BaseModelClient:
     """
     Recognises strings like
         gpt-4o
@@ -1254,7 +1733,8 @@ def load_model_client(model_id: str, prompts_dir: Optional[str] = None) -> BaseM
 
     • If a prefix is omitted the function falls back to the original
       heuristic mapping exactly as before.
-    • If an inline API-key (‘#…’) is present it overrides environment vars.
+    • If an inline API-key ('#…') is present it overrides environment vars.
+    • disable_logging: If True, disables JSONL logging for this client (useful for meta-analysis tools)
     """
     spec = _parse_model_spec(model_id)
 
@@ -1276,11 +1756,16 @@ def load_model_client(model_id: str, prompts_dir: Optional[str] = None) -> BaseM
 
         match pref:
             case Prefix.OPENAI:
+                lower_model = spec.model.lower()
+                # Route gpt-5/o1/o3 families to Responses API
+                if lower_model.startswith("gpt-5") or lower_model.startswith("o3") or lower_model.startswith("o1"):
+                    return OpenAIResponsesClient(spec.model, prompts_dir, api_key=inline_key, disable_logging=disable_logging)
                 return OpenAIClient(
                     model_name=spec.model,
                     prompts_dir=prompts_dir,
                     base_url=spec.base,
                     api_key=inline_key,
+                    disable_logging=disable_logging,
                 )
             case Prefix.OPENAI_REQUESTS:
                 return RequestsOpenAIClient(
@@ -1288,43 +1773,48 @@ def load_model_client(model_id: str, prompts_dir: Optional[str] = None) -> BaseM
                     prompts_dir=prompts_dir,
                     base_url=spec.base,
                     api_key=inline_key,
+                    disable_logging=disable_logging,
                 )
             case Prefix.OPENAI_RESPONSES:
-                return OpenAIResponsesClient(spec.model, prompts_dir, api_key=inline_key)
+                return OpenAIResponsesClient(spec.model, prompts_dir, api_key=inline_key, disable_logging=disable_logging)
             case Prefix.ANTHROPIC:
-                return ClaudeClient(spec.model, prompts_dir)
+                return ClaudeClient(spec.model, prompts_dir, disable_logging=disable_logging)
             case Prefix.GEMINI:
-                return GeminiClient(spec.model, prompts_dir)
+                return GeminiClient(spec.model, prompts_dir, disable_logging=disable_logging)
             case Prefix.DEEPSEEK:
-                return DeepSeekClient(spec.model, prompts_dir)
+                return DeepSeekClient(spec.model, prompts_dir, disable_logging=disable_logging)
             case Prefix.OPENROUTER:
-                return OpenRouterClient(spec.model, prompts_dir)
+                return OpenRouterClient(spec.model, prompts_dir, disable_logging=disable_logging)
             case Prefix.TOGETHER:
-                return TogetherAIClient(spec.model, prompts_dir)
+                return TogetherAIClient(spec.model, prompts_dir, disable_logging=disable_logging)
 
     # ------------------------------------------------------------------ #
     # 2. Heuristic fallback path (identical to the original behaviour)   #
     # ------------------------------------------------------------------ #
     lower_id = spec.model.lower()
 
+    # Route gpt-5/o1/o3 families to Responses API in fallback
+    if lower_id.startswith("gpt-5") or lower_id.startswith("o3") or lower_id.startswith("o1"):
+        return OpenAIResponsesClient(spec.model, prompts_dir, api_key=inline_key, disable_logging=disable_logging)
+
     if lower_id == "o3-pro":
-        return OpenAIResponsesClient(spec.model, prompts_dir, api_key=inline_key)
+        return OpenAIResponsesClient(spec.model, prompts_dir, api_key=inline_key, disable_logging=disable_logging)
 
     if spec.model.startswith("together-"):
         # e.g. "together-mixtral-8x7b"
-        return TogetherAIClient(spec.model.split("together-", 1)[1], prompts_dir)
+        return TogetherAIClient(spec.model.split("together-", 1)[1], prompts_dir, disable_logging=disable_logging)
 
     if "openrouter" in lower_id:
-        return OpenRouterClient(spec.model, prompts_dir)
+        return OpenRouterClient(spec.model, prompts_dir, disable_logging=disable_logging)
 
     if "claude" in lower_id:
-        return ClaudeClient(spec.model, prompts_dir)
+        return ClaudeClient(spec.model, prompts_dir, disable_logging=disable_logging)
 
     if "gemini" in lower_id:
-        return GeminiClient(spec.model, prompts_dir)
+        return GeminiClient(spec.model, prompts_dir, disable_logging=disable_logging)
 
     if "deepseek" in lower_id:
-        return DeepSeekClient(spec.model, prompts_dir)
+        return DeepSeekClient(spec.model, prompts_dir, disable_logging=disable_logging)
 
     # Default: OpenAI-compatible async client
     return OpenAIClient(
@@ -1332,6 +1822,7 @@ def load_model_client(model_id: str, prompts_dir: Optional[str] = None) -> BaseM
         prompts_dir=prompts_dir,
         base_url=spec.base,
         api_key=inline_key,
+        disable_logging=disable_logging,
     )
 
 

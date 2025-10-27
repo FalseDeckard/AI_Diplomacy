@@ -13,6 +13,7 @@ from openai import RateLimitError, APIConnectionError, APITimeoutError
 import aiohttp
 import requests
 from pathlib import Path
+import uuid
 from config import config
 from models import POWERS_ORDER
 
@@ -27,6 +28,103 @@ logger.setLevel(logging.INFO)
 logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
+def append_jsonl(path: str | Path, obj: dict):
+    """Append one JSON object per line to a file, creating dirs as needed."""
+    try:
+        p = Path(path)
+        if p.parent:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.error(f"Failed to append JSONL to {path}: {e}")
+
+
+def log_llm_request_jsonl(
+    *,
+    log_path: str | Path,
+    provider: str,
+    model: str,
+    request_id: str,
+    payload: dict,
+    power: str | None,
+    phase: str | None,
+    response_type: str | None,
+):
+    """Log a full LLM request payload to JSONL for auditing/replay."""
+    try:
+        record = {
+            "ts": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "provider": provider,
+            "model": model,
+            "request_id": request_id,
+            "power": power,
+            "phase": phase,
+            "response_type": response_type,
+            "payload": payload,
+        }
+        append_jsonl(log_path, record)
+    except Exception as e:
+        logger.error(f"Failed to log LLM request: {e}")
+
+
+def log_llm_output_jsonl(
+    *,
+    log_path: str | Path,
+    provider: str,
+    model: str,
+    request_id: str,
+    output_text: str,
+    power: str | None = None,
+    phase: str | None = None,
+    response_type: str | None = None,
+):
+    """Log a full LLM output text to JSONL, linked by request_id."""
+    try:
+        record = {
+            "ts": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "provider": provider,
+            "model": model,
+            "request_id": request_id,
+            "power": power,
+            "phase": phase,
+            "response_type": response_type,
+            "output": output_text,
+        }
+        append_jsonl(log_path, record)
+    except Exception as e:
+        logger.error(f"Failed to log LLM output: {e}")
+
+
+def log_llm_io_jsonl(
+    *,
+    log_path: str | Path,
+    provider: str,
+    model: str,
+    request_id: str,
+    payload: dict,
+    output_text: str,
+    power: str | None = None,
+    phase: str | None = None,
+    response_type: str | None = None,
+):
+    """Log an input-output pair in a single JSONL record."""
+    try:
+        record = {
+            "ts": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "provider": provider,
+            "model": model,
+            "request_id": request_id,
+            "power": power,
+            "phase": phase,
+            "response_type": response_type,
+            "payload": payload,
+            "output": output_text,
+        }
+        append_jsonl(log_path, record)
+    except Exception as e:
+        logger.error(f"Failed to log LLM IO pair: {e}")
+
 
 
 def atomic_write_json(data: dict, filepath: str):

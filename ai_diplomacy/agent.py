@@ -15,7 +15,7 @@ from .clients import BaseModelClient
 # Import load_prompt and the new logging wrapper from utils
 from .utils import load_prompt, run_llm_and_log, log_llm_response, get_prompt_path
 from .prompt_constructor import build_context_prompt  # Added import
-from .clients import GameHistory
+from .game_history import GameHistory
 from diplomacy import Game
 from .formatter import format_with_gemini_flash, FORMAT_ORDER_DIARY, FORMAT_NEGOTIATION_DIARY, FORMAT_STATE_UPDATE
 
@@ -426,6 +426,10 @@ class DiplomacyAgent:
         full_prompt = ""  # For logging in finally block
         raw_response = ""  # For logging in finally block
         success_status = "Failure: Initialized"  # Default
+        structured_response = ""
+        formatted_response = ""
+        parsed_data = None
+        diary_entry_text = "(LLM diary entry generation or parsing failed.)"
 
         try:
             # Load the prompt template file
@@ -433,6 +437,12 @@ class DiplomacyAgent:
             if not prompt_template_content:
                 logger.error(f"[{self.power_name}] Could not load {get_prompt_path('negotiation_diary_prompt.txt')}. Skipping diary entry.")
                 success_status = "Failure: Prompt file not loaded"
+                game_history.add_negotiation_intent(
+                    game.current_short_phase,
+                    self.power_name,
+                    "(Prompt file missing)",
+                    None,
+                )
                 return  # Exit early if prompt can't be loaded
 
             # Prepare context for the prompt
@@ -527,7 +537,6 @@ class DiplomacyAgent:
 
             logger.debug(f"[{self.power_name}] Raw negotiation diary response: {raw_response[:300]}...")
 
-            parsed_data = None
             try:
                 # Conditionally format the response based on USE_UNFORMATTED_PROMPTS
                 if config.USE_UNFORMATTED_PROMPTS:
@@ -542,7 +551,8 @@ class DiplomacyAgent:
                 else:
                     # Use the raw response directly (already formatted)
                     formatted_response = raw_response
-                parsed_data = self._extract_json_from_text(formatted_response)
+                structured_response = formatted_response
+                parsed_data = self._extract_json_from_text(structured_response)
                 logger.debug(f"[{self.power_name}] Parsed diary data: {parsed_data}")
                 success_status = "Success: Parsed diary data"
             except json.JSONDecodeError as e:
@@ -636,6 +646,13 @@ class DiplomacyAgent:
             if relationships_updated:
                 self.add_journal_entry(f"[{game.current_short_phase}] Relationships updated after negotiation diary: {self.relationships}")
 
+            game_history.add_negotiation_intent(
+                game.current_short_phase,
+                self.power_name,
+                structured_response or raw_response,
+                parsed_data,
+            )
+
             # If success_status is still the default 'Parsed diary data' but no relationships were updated, refine it.
             if success_status == "Success: Parsed diary data" and not relationships_updated:
                 success_status = "Success: Parsed, only diary text applied"
@@ -646,6 +663,12 @@ class DiplomacyAgent:
             success_status = f"Failure: Exception ({type(e).__name__})"
             # Add a fallback diary entry in case of general error
             self.add_diary_entry(f"(Error generating diary entry: {type(e).__name__})", game.current_short_phase)
+            game_history.add_negotiation_intent(
+                game.current_short_phase,
+                self.power_name,
+                raw_response or "(Error generating diary entry)",
+                None,
+            )
         finally:
             if log_file_path:  # Ensure log_file_path is provided
                 log_llm_response(
@@ -659,34 +682,49 @@ class DiplomacyAgent:
                     success=success_status,
                 )
 
-    async def generate_order_diary_entry(self, game: "Game", orders: List[str], log_file_path: str):
+    async def generate_order_briefing(self, game: "Game", game_history: GameHistory, possible_orders: Dict[str, List[str]], log_file_path: str):
         """
-        Generates a diary entry reflecting on the decided orders.
+        Generates a pre-order briefing to finalize reasoning before order submission.
         """
-        logger.info(f"[{self.power_name}] Generating order diary entry for {game.current_short_phase}...")
+        logger.info(f"[{self.power_name}] Generating order briefing for {game.current_short_phase}...")
 
         # Load the prompt template
         prompt_template = load_prompt(get_prompt_path("order_diary_prompt.txt"), prompts_dir=self.prompts_dir)
         if not prompt_template:
-            logger.error(f"[{self.power_name}] Could not load {get_prompt_path('order_diary_prompt.txt')}. Skipping diary entry.")
+            logger.error(f"[{self.power_name}] Could not load {get_prompt_path('order_diary_prompt.txt')}. Skipping order briefing.")
+            game_history.add_order_briefing(
+                game.current_short_phase,
+                self.power_name,
+                "(Prompt file missing)",
+                None,
+            )
             return
 
         board_state_dict = game.get_state()
         board_state_str = f"Units: {board_state_dict.get('units', {})}, Centers: {board_state_dict.get('centers', {})}"
 
-        orders_list_str = "\n".join([f"- {o}" for o in orders]) if orders else "No orders submitted."
+        # Format possible orders into a readable string grouped by unit/location
+        formatted_possible_orders: List[str] = []
+        for location, opts in sorted(possible_orders.items()):
+            formatted_possible_orders.append(f"{location}:")
+            if opts:
+                for opt in opts:
+                    formatted_possible_orders.append(f"  - {opt}")
+            else:
+                formatted_possible_orders.append("  - (No legal orders)")
+        possible_orders_str = "\n".join(formatted_possible_orders) if formatted_possible_orders else "(No legal orders)"
 
         goals_str = "\n".join([f"- {g}" for g in self.goals]) if self.goals else "None"
         relationships_str = "\n".join([f"- {p}: {s}" for p, s in self.relationships.items()]) if self.relationships else "None"
 
         # Do aggressive preprocessing on the template file
         # Fix any whitespace or formatting issues that could break .format()
-        for pattern in ["order_summary"]:
+        for pattern in ["intended_orders", "alternate_orders"]:
             prompt_template = re.sub(rf'\n\s*"{pattern}"', f'"{pattern}"', prompt_template)
 
         # Escape all curly braces in JSON examples to prevent format() from interpreting them
         # First, temporarily replace the actual template variables
-        temp_vars = ["power_name", "current_phase", "orders_list_str", "board_state_str", "agent_goals", "agent_relationships"]
+        temp_vars = ["power_name", "current_phase", "possible_orders_str", "board_state_str", "agent_goals", "agent_relationships"]
         for var in temp_vars:
             prompt_template = prompt_template.replace(f"{{{var}}}", f"<<{var}>>")
 
@@ -702,7 +740,7 @@ class DiplomacyAgent:
         format_vars = {
             "power_name": self.power_name,
             "current_phase": game.current_short_phase,
-            "orders_list_str": orders_list_str,
+            "possible_orders_str": possible_orders_str,
             "board_state_str": board_state_str,
             "agent_goals": goals_str,
             "agent_relationships": relationships_str,
@@ -720,18 +758,18 @@ class DiplomacyAgent:
 
         response_data = None
         raw_response = None  # Initialize raw_response
+        formatted_response = None
         try:
             raw_response = await run_llm_and_log(
                 client=self.client,
-                prompt=prompt, 
+                prompt=prompt,
                 power_name=self.power_name,
                 phase=game.current_short_phase,
-                response_type="order_diary",
+                response_type="order_briefing",
             )
 
             success_status = "FALSE"
             response_data = None
-            actual_diary_text = None  # Variable to hold the final diary text
 
             if raw_response:
                 try:
@@ -739,55 +777,22 @@ class DiplomacyAgent:
                     if config.USE_UNFORMATTED_PROMPTS:
                         # Format the natural language response into JSON
                         formatted_response = await format_with_gemini_flash(
-                            raw_response, FORMAT_ORDER_DIARY, power_name=self.power_name, phase=game.current_short_phase, log_file_path=log_file_path
+                            raw_response,
+                            FORMAT_ORDER_DIARY,
+                            power_name=self.power_name,
+                            phase=game.current_short_phase,
+                            log_file_path=log_file_path,
                         )
                     else:
                         # Use the raw response directly (already formatted)
                         formatted_response = raw_response
                     response_data = self._extract_json_from_text(formatted_response)
-                    if response_data:
-                        # Extract comprehensive order diary from enhanced format
-                        diary_text_parts = []
-                        
-                        # Check for new enhanced fields
-                        enhanced_fields = [
-                            ("tactical_reasoning", "TACTICAL REASONING"),
-                            ("strategic_calculations", "STRATEGIC CALCULATIONS"),
-                            ("risk_assessment", "RISK ASSESSMENT"),
-                            ("opponent_predictions", "OPPONENT PREDICTIONS"),
-                            ("future_positioning", "FUTURE POSITIONING"),
-                            ("coordination_analysis", "COORDINATION ANALYSIS")
-                        ]
-                        
-                        for field, label in enhanced_fields:
-                            if field in response_data and isinstance(response_data[field], str) and response_data[field].strip():
-                                diary_text_parts.append(f"{label}: {response_data[field].strip()}")
-                        
-                        # Add order summary
-                        if "order_summary" in response_data and isinstance(response_data["order_summary"], str) and response_data["order_summary"].strip():
-                            diary_text_parts.append(f"ORDER SUMMARY: {response_data['order_summary'].strip()}")
-                        
-                        # Combine parts or fall back to legacy
-                        if diary_text_parts:
-                            actual_diary_text = "\n\n".join(diary_text_parts)
-                            success_status = "TRUE"
-                            logger.info(f"[{self.power_name}] Successfully extracted enhanced order diary with {len(diary_text_parts)} sections.")
-                        else:
-                            # Fallback to legacy extraction
-                            diary_text_candidate = response_data.get("order_summary")
-                            if isinstance(diary_text_candidate, str) and diary_text_candidate.strip():
-                                actual_diary_text = diary_text_candidate
-                                success_status = "TRUE"
-                                logger.info(f"[{self.power_name}] Fallback: extracted 'order_summary' for order diary entry.")
-                            else:
-                                logger.warning(f"[{self.power_name}] 'order_summary' missing, invalid, or empty. Value was: {diary_text_candidate}")
-                                success_status = "FALSE"
-                    else:
-                        # response_data is None (JSON parsing failed)
-                        logger.warning(f"[{self.power_name}] Failed to parse JSON from order diary LLM response.")
-                        success_status = "FALSE"
+                    success_status = "TRUE" if response_data else "FALSE"
                 except Exception as e:
-                    logger.error(f"[{self.power_name}] Error processing order diary JSON: {e}. Raw response: {raw_response[:200]} ", exc_info=False)
+                    logger.error(
+                        f"[{self.power_name}] Error processing order briefing JSON: {e}. Raw response: {raw_response[:200]} ",
+                        exc_info=False,
+                    )
                     success_status = "FALSE"
 
             log_llm_response(
@@ -795,21 +800,18 @@ class DiplomacyAgent:
                 model_name=self.client.model_name,
                 power_name=self.power_name,
                 phase=game.current_short_phase,
-                response_type="order_diary",
-                raw_input_prompt=prompt,  # ENSURED
+                response_type="order_briefing",
+                raw_input_prompt=prompt,
                 raw_response=raw_response if raw_response else "",
                 success=success_status,
             )
 
-            if success_status == "TRUE" and actual_diary_text:
-                self.add_diary_entry(actual_diary_text, game.current_short_phase)
-                logger.info(f"[{self.power_name}] Order diary entry generated and added.")
-            else:
-                fallback_diary = (
-                    f"Submitted orders for {game.current_short_phase}: {', '.join(orders)}. (LLM failed to generate a specific diary entry)"
-                )
-                self.add_diary_entry(fallback_diary, game.current_short_phase)
-                logger.warning(f"[{self.power_name}] Failed to generate specific order diary entry. Added fallback.")
+            game_history.add_order_briefing(
+                game.current_short_phase,
+                self.power_name,
+                formatted_response if formatted_response is not None else (raw_response or ""),
+                response_data,
+            )
 
         except Exception as e:
             # Ensure prompt is defined or handled if it might not be (it should be in this flow)
@@ -820,15 +822,19 @@ class DiplomacyAgent:
                 model_name=self.client.model_name if hasattr(self, "client") else "UnknownModel",
                 power_name=self.power_name,
                 phase=game.current_short_phase if "game" in locals() and hasattr(game, "current_short_phase") else "order_phase",
-                response_type="order_diary_exception",
+                response_type="order_briefing_exception",
                 raw_input_prompt=current_prompt,  # ENSURED (using current_prompt for safety)
                 raw_response=current_raw_response,
                 success="FALSE",
             )
-            fallback_diary = f"Submitted orders for {game.current_short_phase}: {', '.join(orders)}. (Critical error in diary generation process)"
-            self.add_diary_entry(fallback_diary, game.current_short_phase)
-            logger.warning(f"[{self.power_name}] Added fallback order diary entry due to critical error.")
-        # Rest of the code remains the same
+            logger.warning(f"[{self.power_name}] Critical error during order briefing generation: {e}")
+
+            game_history.add_order_briefing(
+                game.current_short_phase,
+                self.power_name,
+                current_raw_response,
+                None,
+            )
 
     async def generate_phase_result_diary_entry(
         self, game: "Game", game_history: "GameHistory", phase_summary: str, all_orders: Dict[str, List[str]], log_file_path: str
@@ -903,6 +909,7 @@ class DiplomacyAgent:
                 # The response should be plain text diary entry
                 diary_entry = raw_response.strip()
                 self.add_diary_entry(diary_entry, game.current_short_phase)
+                game_history.add_phase_result_diary(game.current_short_phase, self.power_name, diary_entry)
                 success_status = "TRUE"
                 logger.info(f"[{self.power_name}] Phase result diary entry generated and added.")
             else:
@@ -910,6 +917,7 @@ class DiplomacyAgent:
                     f"Phase {game.current_short_phase} completed. Orders executed as: {your_orders_str}. (Failed to generate detailed analysis)"
                 )
                 self.add_diary_entry(fallback_diary, game.current_short_phase)
+                game_history.add_phase_result_diary(game.current_short_phase, self.power_name, fallback_diary)
                 logger.warning(f"[{self.power_name}] Empty response from LLM. Added fallback phase result diary.")
                 success_status = "FALSE"
 
@@ -917,6 +925,7 @@ class DiplomacyAgent:
             logger.error(f"[{self.power_name}] Error generating phase result diary: {e}", exc_info=True)
             fallback_diary = f"Phase {game.current_short_phase} completed. Unable to analyze results due to error."
             self.add_diary_entry(fallback_diary, game.current_short_phase)
+            game_history.add_phase_result_diary(game.current_short_phase, self.power_name, fallback_diary)
             success_status = f"FALSE: {type(e).__name__}"
         finally:
             log_llm_response(

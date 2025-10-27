@@ -11,6 +11,8 @@ class Configuration(BaseSettings):
     log_file_path: Path | None = None
     USE_UNFORMATTED_PROMPTS: bool = False
     SIMPLE_PROMPTS: bool = True
+    ALLOW_NARRATION_FAILURE: bool = True
+    PLAYER_TEMPERATURE: float = 0.0
 
     # Default models for tasks
     AI_DIPLOMACY_NARRATIVE_MODEL: str = "together:meta-llama/Llama-3.3-70B-Instruct-Turbo" 
@@ -31,8 +33,8 @@ class Configuration(BaseSettings):
     def __init__(self, power_name: Optional[PowerEnum] = None, **kwargs):
         super().__init__(**kwargs)
         # Add a '-POWER' to the end of the file name if it's for a specific power
-        log_power_path = "-" + power_name if power_name else None
-        self.log_file_path = Path(f"./logs/{datetime.datetime.now().strftime('%d-%m-%y_%H:%M')}/logs{log_power_path} .txt")
+        log_power_suffix = f"-{power_name}" if power_name else ""
+        self.log_file_path = Path(f"./logs/{datetime.datetime.now().strftime('%d-%m-%y_%H:%M')}/logs{log_power_suffix}.txt")
         # Make the path absolute, gets rid of weirdness of calling this in different places
         self.log_file_path = self.log_file_path.resolve()
         self.log_file_path.parent.mkdir(parents=True, exist_ok=True)

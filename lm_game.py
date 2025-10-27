@@ -7,7 +7,7 @@ import json
 import asyncio
 from collections import defaultdict
 from argparse import Namespace
-from typing import Dict
+from typing import Dict, List, Optional
 import shutil
 import sys
 
@@ -23,7 +23,7 @@ from diplomacy import Game
 from ai_diplomacy.utils import get_valid_orders, gather_possible_orders, parse_prompts_dir_arg
 from ai_diplomacy.negotiations import conduct_negotiations
 from ai_diplomacy.planning import planning_phase
-from ai_diplomacy.game_history import GameHistory
+from ai_diplomacy.game_history import GameHistory, Phase
 from ai_diplomacy.agent import DiplomacyAgent
 from ai_diplomacy.game_logic import (
     save_game_state,
@@ -32,6 +32,7 @@ from ai_diplomacy.game_logic import (
 )
 from ai_diplomacy.diary_logic import run_diary_consolidation
 from config import config
+
 
 dotenv.load_dotenv()
 
@@ -57,6 +58,84 @@ def _str2bool(v: str) -> bool:
 def _detect_victory(game: Game, threshold: int = 18) -> bool:
     """True iff any power already owns ≥ `threshold` supply centres."""
     return any(len(p.centers) >= threshold for p in game.powers.values())
+
+
+def _append_phase_reports(report_path: str, phase_obj: Optional[Phase], game: Game):
+    """Append a JSON record per power summarising key artefacts for *phase_obj*."""
+
+    if phase_obj is None:
+        return
+
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
+    def _collect_messages(power_name: str) -> List[Dict[str, str]]:
+        collected: List[Dict[str, str]] = []
+        for msg in phase_obj.messages:
+            sender = getattr(msg, "sender", None) if not isinstance(msg, dict) else msg.get("sender")
+            recipient = getattr(msg, "recipient", None) if not isinstance(msg, dict) else msg.get("recipient")
+            content = getattr(msg, "content", None) if not isinstance(msg, dict) else msg.get("content")
+
+            if sender == power_name:
+                collected.append({
+                    "direction": "sent",
+                    "sender": sender,
+                    "recipient": recipient,
+                    "content": content,
+                })
+            elif recipient in {power_name, "ALL", "GLOBAL"}:
+                collected.append({
+                    "direction": "received",
+                    "sender": sender,
+                    "recipient": recipient,
+                    "content": content,
+                })
+        return collected
+
+    def _combine_results(power_name: str) -> List[Dict[str, object]]:
+        accepted = list(phase_obj.orders_by_power.get(power_name, []))
+        raw_results = phase_obj.results_by_power.get(power_name, [])
+        combined: List[Dict[str, object]] = []
+        for idx, order in enumerate(accepted):
+            outcome = []
+            if isinstance(raw_results, list) and idx < len(raw_results):
+                entry = raw_results[idx]
+                if isinstance(entry, list):
+                    outcome = entry
+                elif entry is None:
+                    outcome = []
+                else:
+                    outcome = [entry]
+            combined.append({"order": order, "result": outcome})
+        return combined
+
+    try:
+        with open(report_path, "a", encoding="utf-8") as fp:
+            for power_name, power in game.powers.items():
+                record = {
+                    "phase": phase_obj.name,
+                    "power": power_name,
+                    "eliminated": getattr(power, "is_eliminated", lambda: False)(),
+                    "negotiation_intent": {
+                        "raw": phase_obj.negotiation_intent_text.get(power_name),
+                        "parsed": phase_obj.negotiation_intents.get(power_name),
+                    },
+                    "messages": _collect_messages(power_name),
+                    "planning": phase_obj.plans.get(power_name),
+                    "order_briefing": {
+                        "raw": phase_obj.order_briefing_raw.get(power_name),
+                        "parsed": phase_obj.order_briefings.get(power_name),
+                    },
+                    "orders": {
+                        "submitted": list(phase_obj.submitted_orders_by_power.get(power_name, [])),
+                        "accepted": list(phase_obj.orders_by_power.get(power_name, [])),
+                        "results": _combine_results(power_name),
+                    },
+                    "phase_result_diary": phase_obj.phase_result_diaries.get(power_name),
+                }
+                fp.write(json.dumps(record, ensure_ascii=False, indent=2))
+                fp.write("\n\n")
+    except OSError as exc:
+        logger.error("Failed to write phase report for %s: %s", phase_obj.name, exc)
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -282,7 +361,7 @@ async def main():
         except (FileNotFoundError, ValueError) as e:
             logger.error(f"Could not resume game: {e}. Starting a new game instead.")
             is_resuming = False # Fallback to new game
-    
+
     if not is_resuming:
         game = Game()
         game_history = GameHistory()
@@ -317,16 +396,7 @@ async def main():
 
         # --- 4b. Pre-Order Generation Steps (Movement Phases Only) ---
         if current_short_phase.endswith("M"):
-            if run_config.num_negotiation_rounds > 0:
-                game_history = await conduct_negotiations(
-                    game, agents, game_history, model_error_stats,
-                    max_rounds=run_config.num_negotiation_rounds, log_file_path=llm_log_file_path,
-                )
-            if run_config.planning_phase:
-                await planning_phase(
-                    game, agents, game_history, model_error_stats, log_file_path=llm_log_file_path,
-                )
-            
+            # 1) Intent: analyze negotiations and declare high-level intent before any new conversations
             neg_diary_tasks = [
                 agent.generate_negotiation_diary_entry(game, game_history, llm_log_file_path)
                 for agent in agents.values() if not game.powers[agent.power_name].is_eliminated()
@@ -334,35 +404,77 @@ async def main():
             if neg_diary_tasks:
                 await asyncio.gather(*neg_diary_tasks, return_exceptions=True)
 
+            # 2) Conversations
+            if run_config.num_negotiation_rounds > 0:
+                game_history = await conduct_negotiations(
+                    game, agents, game_history, model_error_stats,
+                    max_rounds=run_config.num_negotiation_rounds, log_file_path=llm_log_file_path,
+                )
+
+            # 3) Think about orders (planning)
+            if run_config.planning_phase:
+                await planning_phase(
+                    game, agents, game_history, model_error_stats, log_file_path=llm_log_file_path,
+                )
+
         # --- 4c. Order Generation ---
         logger.info("Getting orders from agents...")
         board_state = game.get_state()
-        order_tasks = []
+        possible_orders_by_power: Dict[str, Dict[str, List[str]]] = {}
+        order_briefing_tasks = []
+
         for power_name, agent in agents.items():
-            if not game.powers[power_name].is_eliminated():
-                possible_orders = gather_possible_orders(game, power_name)
-                if not possible_orders:
-                    game.set_orders(power_name, [])
-                    continue
-                
-                order_tasks.append(
-                    get_valid_orders(
-                        game, agent.client, board_state, power_name, possible_orders,
-                        game_history, model_error_stats,
-                        agent_goals=agent.goals, agent_relationships=agent.relationships,
-                        agent_private_diary_str=agent.format_private_diary_for_prompt(),
-                        log_file_path=llm_log_file_path, phase=current_phase,
-                    )
+            if game.powers[power_name].is_eliminated():
+                continue
+
+            possible_orders = gather_possible_orders(game, power_name)
+            if not possible_orders:
+                game.set_orders(power_name, [])
+                continue
+
+            possible_orders_by_power[power_name] = possible_orders
+            order_briefing_tasks.append(
+                agent.generate_order_briefing(
+                    game,
+                    game_history,
+                    possible_orders,
+                    llm_log_file_path,
                 )
-        
+            )
+
+        if order_briefing_tasks:
+            briefing_results = await asyncio.gather(*order_briefing_tasks, return_exceptions=True)
+            for power_name, result in zip(possible_orders_by_power.keys(), briefing_results):
+                if isinstance(result, Exception):
+                    logger.error("Error generating order briefing for %s: %s", power_name, result, exc_info=result)
+
+        order_tasks = []
+        order_power_names: List[str] = []
+        for power_name, possible_orders in possible_orders_by_power.items():
+            agent = agents[power_name]
+            order_tasks.append(
+                get_valid_orders(
+                    game,
+                    agent.client,
+                    board_state,
+                    power_name,
+                    possible_orders,
+                    game_history,
+                    model_error_stats,
+                    agent_goals=agent.goals,
+                    agent_relationships=agent.relationships,
+                    agent_private_diary_str=agent.format_private_diary_for_prompt(),
+                    log_file_path=llm_log_file_path,
+                    phase=current_phase,
+                )
+            )
+            order_power_names.append(power_name)
+
         order_results = await asyncio.gather(*order_tasks, return_exceptions=True)
-        
-        active_powers = [p for p, a in agents.items() if not game.powers[p].is_eliminated()]
-        order_power_names = [p for p in active_powers if gather_possible_orders(game, p)]
+
         submitted_orders_this_phase = defaultdict(list)
 
-        for i, result in enumerate(order_results):
-            p_name = order_power_names[i]
+        for p_name, result in zip(order_power_names, order_results):
 
             if isinstance(result, Exception):
                 logger.error("Error getting orders for %s: %s", p_name, result, exc_info=result)
@@ -376,12 +488,6 @@ async def main():
 
             # what we record for prompt/history purposes
             submitted_orders_this_phase[p_name] = valid + invalid
-
-            # diary entry only for the orders we tried to submit
-            if valid or invalid:
-                await agents[p_name].generate_order_diary_entry(
-                    game, valid + invalid, llm_log_file_path
-                )
                 
         # --- 4d. Process Phase ---
         completed_phase = current_phase
@@ -412,6 +518,7 @@ async def main():
 
         phase_summary = game.phase_summaries.get(current_phase, "(Summary not generated)")
         all_orders_this_phase = game.order_history.get(current_short_phase, {})
+
         
         # Phase Result Diary Entries
         phase_result_diary_tasks = [
@@ -420,6 +527,10 @@ async def main():
         ]
         if phase_result_diary_tasks:
             await asyncio.gather(*phase_result_diary_tasks, return_exceptions=True)
+
+        report_file = os.path.join(run_dir, "combined_phase_reports.jsonl")
+        phase_obj_in_history = game_history._get_phase(completed_phase)
+        _append_phase_reports(report_file, phase_obj_in_history, game)
 
         # Diary Consolidation
         if current_short_phase.startswith("S") and current_short_phase.endswith("M"):

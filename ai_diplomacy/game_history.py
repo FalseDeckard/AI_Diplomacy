@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger("utils")
 logger.setLevel(logging.INFO)
@@ -29,6 +29,11 @@ class Phase:
     phase_summaries: Dict[str, str] = field(default_factory=dict)
     # NEW: Store experience/journal updates from each power for this phase
     experience_updates: Dict[str, str] = field(default_factory=dict)
+    negotiation_intent_text: Dict[str, str] = field(default_factory=dict)
+    negotiation_intents: Dict[str, Any] = field(default_factory=dict)
+    order_briefings: Dict[str, Any] = field(default_factory=dict)
+    order_briefing_raw: Dict[str, str] = field(default_factory=dict)
+    phase_result_diaries: Dict[str, str] = field(default_factory=dict)
 
     def add_plan(self, power_name: str, plan: str):
         self.plans[power_name] = plan
@@ -135,6 +140,25 @@ class GameHistory:
         if phase:
             phase.experience_updates[power_name] = update
             logger.debug(f"Added experience update for {power_name} in {phase_name}")
+
+    def add_negotiation_intent(self, phase_name: str, power_name: str, raw_text: str, parsed_json: Optional[Dict[str, Any]]):
+        phase = self._get_phase(phase_name)
+        if phase:
+            phase.negotiation_intent_text[power_name] = raw_text
+            if parsed_json is not None:
+                phase.negotiation_intents[power_name] = parsed_json
+
+    def add_order_briefing(self, phase_name: str, power_name: str, raw_text: str, parsed_json: Optional[Dict[str, Any]]):
+        phase = self._get_phase(phase_name)
+        if phase:
+            phase.order_briefing_raw[power_name] = raw_text
+            if parsed_json is not None:
+                phase.order_briefings[power_name] = parsed_json
+
+    def add_phase_result_diary(self, phase_name: str, power_name: str, diary_text: str):
+        phase = self._get_phase(phase_name)
+        if phase:
+            phase.phase_result_diaries[power_name] = diary_text
 
     def get_strategic_directives(self):
         # returns for last phase only if exists

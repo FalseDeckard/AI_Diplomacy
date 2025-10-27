@@ -1,8 +1,8 @@
-NEGOTIATION SUMMARY REQUEST
+NEGOTIATION INTENT BRIEFING
 Power: {power_name}
 Phase: {current_phase}
 
-MESSAGES THIS ROUND
+RECENT CONTEXT FOR PREPARATION
 {messages_this_round}
 {ignored_messages_context}
 
@@ -17,21 +17,21 @@ Game State:
 {board_state_str}
 
 TASK
-Write a detailed diary entry analyzing the negotiations and planning your strategy. Focus on negotiation outcomes, relationship dynamics, and strategic intent. Do not provide detailed tactical justification for specific orders here; reserve that for the Order Diary.
+You have not yet negotiated this phase. Prepare your negotiation intent before sending new messages. Focus on upcoming objectives, leverage, and deception plans rather than post-hoc outcomes. Do not provide detailed tactical justification for specific orders here; reserve that for the Order Diary.
 
-1. DETAILED THOUGHTS: Your honest assessment of each power's motivations, trustworthiness, and likely actions
-2. STRATEGIC PLANS: High-level plan for the next 2-3 phases, including contingencies (no specific order-by-order justification)
-3. DECEPTION ANALYSIS (OTHERS): Who might be lying to you? What are their likely hidden agendas?
-4. FUTURE POSITIONING: Where do you want to be in 3-4 phases? What alliances do you need?
-5. RELATIONSHIP UPDATES: Based on behavior, update your trust levels with each power
-6. NEGOTIATION OUTCOMES: Summarize key agreements and your confidence in them
-7. OWN DECEPTION INTENT: Whether you plan to deceive/betray/lie this phase, whom you will target, why, and constraints/limits.
+1. SITUATION REVIEW: Outstanding promises, betrayals, or commitments from prior phases that shape negotiations now.
+2. NEGOTIATION OBJECTIVES: Concrete results you aim to secure in the upcoming talks (supports, DMZs, swaps, timing).
+3. TARGETED OUTREACH: Which powers you will engage, avoid, or pressure; tone and rationale for each outreach.
+4. LEVERAGE AND PRESSURE: Assets, information, or threats you will use; concessions you are willing or unwilling to grant.
+5. RELATIONSHIP UPDATES: Adjust trust levels based on recent behavior and how that affects your approach.
+6. NEGOTIATION AGENDA: Key talking points, offers, and red lines you intend to present (a forward-looking plan, not a recap).
+7. OWN DECEPTION INTENT: Whether you plan to deceive/betray/lie this phase, whom you will target, why, and any constraints or limits.
 
-When powers ignore your messages, analyze:
-- Are they avoiding commitment because they're planning betrayal?
+When powers ignore your messages, plan how to address it:
+- Are they avoiding commitment because they are planning betrayal?
 - Do they have better offers from other powers?
-- Should you pressure them, offer better terms, or write them off?
-- What does their silence reveal about their strategic priorities?
+- Should you pressure them, offer better terms, or deprioritize them?
+- What does their silence reveal about their strategic priorities and how will you surface a response?
 
 RESPONSE FORMAT
 Return ONLY a JSON object with this structure:
@@ -41,9 +41,9 @@ Return ONLY a JSON object with this structure:
 "strategic_plan": "Your high-level plan for the next 2-3 phases, with objectives and contingencies (omit specific order-by-order reasoning).",
 "deception_analysis": "Your assessment of who might be deceiving you and why. Include evidence and your confidence level in various promises.",
 "future_positioning": "Your long-term strategic vision (3-4 phases ahead). Where do you want to position yourself? What alliances or eliminations do you need?",
-"negotiation_summary": "Key outcomes from negotiations and your confidence in various agreements",
-"intent": "Strategic intent for upcoming orders (no detailed justification)",
-"own_deception_intent": "Whether you plan to deceive/betray/lie this phase; targets, rationale, and constraints",
+"negotiation_summary": "Agenda and outcomes you intend to pursue in the upcoming negotiations; key offers/asks and success criteria.",
+"intent": "Strategic intent for upcoming orders (no detailed justification).",
+"own_deception_intent": "Whether you plan to deceive/betray/lie this phase; targets, rationale, and constraints.",
 "updated_relationships": {
 "POWER_NAME": "Enemy|Unfriendly|Neutral|Friendly|Ally"
 }
