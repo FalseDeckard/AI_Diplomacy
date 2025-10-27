@@ -1,9 +1,9 @@
-ORDER DIARY ENTRY
+PRE-ORDER BRIEFING
 Power: {power_name}
 Phase: {current_phase}
 
-ORDERS ISSUED
-{orders_list_str}
+POSSIBLE ORDERS
+{possible_orders_str}
 
 CURRENT STATUS
 Game State:
@@ -16,40 +16,36 @@ Relationships:
 {agent_relationships}
 
 TASK
-Write a detailed private diary entry reflecting on your issued orders. Focus on concrete reasoning tied to these orders and actionable checks for next phase. Avoid repeating high-level negotiation summaries; only include deltas since the last negotiation diary.
+Before submitting orders, finalize your tactical and diplomatic plan. Think through how you will employ deception, who will be misled, what promises you will keep or break, and why. This is pre-action reasoning—no post-hoc justification. Do not mention "final" orders have been sent yet; you are still planning.
 
-1. TACTICAL REASONING (CONCRETE): Why these specific orders now? What immediate threats/opportunities do they address? What key assumptions underpin them?
-2. RISK ASSESSMENT: What could go wrong with these orders? List concrete failure modes and your contingencies.
-3. OPPONENT PREDICTIONS: Expected orders/reactions by other powers tied to these orders; signals that would confirm/deny.
-4. NEXT-PHASE POSTURE (DELTA): How these orders change your posture for the next phase; opportunities opened/closed (avoid long-horizon repetition).
-5. DECEPTION & COORDINATION (OTHERS): Who might be deceiving you and why; evidence and confidence; tests (costly signals, verifiable exchanges) you will use next phase.
-6. SELF-DECEPTION & YOUR OWN DECEPTION (CRITICAL): Be explicit about your own misinformation tactics and blind spots:
-	• Promises you made (to whom, exact content, phase) and whether you intend to keep, delay, break them or do something else(with rationale).
-	• Cover stories / omissions you’re using, what could expose them, and your recovery plan if caught.
-	• Assumptions most likely to be wrong and the disconfirming evidence you’ll watch for.
+1. TACTICAL PLAN: How you intend to use your units this phase; key objectives, sequencing, and contingencies.
+2. OPPONENT PREDICTIONS: Likely moves/reactions from each relevant power and how they affect your plan.
+3. DECEPTION PLAN (OTHERS): Lies, betrayals, or misdirection you will deploy; targets, stories, and trigger conditions.
+4. COORDINATION & PROMISES: Agreements you will honor or break; new offers/supports you will request or fabricate.
+5. RISK WATCHLIST: Failure modes (diplomatic or tactical) to monitor and the telltale signs that force adaptation.
+6. VERIFICATION PLAN: Specific tests or signals (supports, bounces, timed confirmations) to validate others' claims.
+7. INTENDED ORDERS: List the orders you plan to submit (they are not executed yet); include any alternates if contingent on negotiations.
+
+When powers ignore you or hedge, plan how to surface a response:
+- Escalate pressure, sweeten the offer, or deprioritize the relationship?
+- What leverage or information will you use?
+- How will silence affect your trust and deception plan?
 
 RESPONSE FORMAT
 Return ONLY a JSON object with this structure:
+
 {
-"tactical_reasoning": "Concrete reasons for these orders; immediate threats/opportunities; key assumptions",
-"risk_assessment": "Concrete failure modes, probabilities (rough), and contingencies per failure mode",
-"opponent_predictions": "Expected orders/reactions by other powers tied to these orders; specific observable signals that would confirm/deny",
-"next_phase_posture": "Delta in posture created by these orders; opportunities opened/closed; build/retreat implications",
-"coordination_analysis": "Others’ deception risks: who/why/evidence; confidence levels; verification plan with costly signals",
-"self_deception_reflection": "Where you may be fooling yourself; biases, motivated reasoning, and what would change your mind",
-"deception_log": {
-"promises_made": [
-{"to": "POWER", "content": "exact promise", "phase": "{current_phase}", "intent": "keep|delay|break", "rationale": "why"}
+"tactical_plan": "Detailed narrative of your intended moves, objectives, and contingencies.",
+"opponent_predictions": "Likely actions by other powers and how they affect your plan.",
+"deception_plan": [
+  {"power": "POWER", "story": "What you will claim or hide", "status": "honor|break|fabricate", "trigger": "When you will execute this deception", "rationale": "Why this deception is valuable"}
 ],
-"cover_stories": [
-{"audience": "POWER/ALL", "story": "what you’re claiming/omitting", "purpose": "buy time/divert/probe/other", "rationale": "why", "expiry": "phase or trigger", "exposure_signals": "what would reveal it"}
-],
-"exposure_risks": [
-{"risk": "what could expose you", "trigger": "event/order/signal", "probability": 0.0, "mitigation": "fallback or narrative"}
-]
-},
-"verification_plan": "Specific tests next phase to validate others’ claims (bounces, supports, timed confirmations)",
-"order_summary": "Brief summary of the issued orders and their strategic intent"
+"coordination_plan": "Promises to uphold or break; supports or deals you will seek or falsify.",
+"risk_watchlist": "Specific risks and warning signs you will monitor.",
+"verification_plan": "Tests you will run to confirm or debunk others' claims.",
+"intended_orders": ["order1", "order2", "..."],
+"alternate_orders": ["order_if_change1", "order_if_change2"]
 }
+
 
 Do not include any text outside the JSON.

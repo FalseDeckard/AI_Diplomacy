@@ -56,7 +56,7 @@ This document provides an analysis of key Python modules within the `ai_diplomac
    * Structured entries with phase prefix via `add_diary_entry(entry, phase)`
    * Three types of diary entries generated each phase:
      - **Negotiation Diary** (`generate_negotiation_diary_entry`): Analyzes messages, updates relationships
-     - **Order Diary** (`generate_order_diary_entry`): Records strategic reasoning behind orders
+    - **Order Briefing** (`generate_order_briefing`): Finalizes reasoning and deception plans before submitting orders
      - **Phase Result Diary** (`generate_phase_result_diary_entry`): Analyzes outcomes, detects betrayals
    * Fed to LLMs via `format_private_diary_for_prompt(max_entries=40)`
    * **Yearly Consolidation** (`consolidate_year_diary_entries`):
