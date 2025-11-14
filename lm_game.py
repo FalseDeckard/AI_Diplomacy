@@ -252,6 +252,12 @@ def parse_arguments():
             "Set to false (0 / false / no) to use original single-step formatted prompts."
         ),
     )
+    parser.add_argument(
+        "--player_temperature",
+        type=float,
+        default=None,
+        help="Global temperature for all player LLM calls (overrides config and per-model defaults).",
+    )
 
     return parser.parse_args()
 
@@ -265,6 +271,14 @@ async def main():
         if args.prompts_dir is None:
             pkg_root = os.path.join(os.path.dirname(__file__), "ai_diplomacy")
             args.prompts_dir = os.path.join(pkg_root, "prompts_simple")
+
+    # Apply global player temperature override if provided
+    if args.player_temperature is not None:
+        try:
+            config.PLAYER_TEMPERATURE = float(args.player_temperature)
+            logger.info(f"Global player temperature set to {config.PLAYER_TEMPERATURE}")
+        except Exception:
+            logger.warning("Invalid --player_temperature value; keeping existing config value.")
 
     # Prompt-dir validation & mapping
     try:
