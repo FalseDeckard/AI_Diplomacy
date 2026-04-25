@@ -242,7 +242,7 @@ class GameHistory:
 
                 seen_ok = set()
 
-                # 1️⃣ accepted orders
+                # accepted orders
                 for idx, order in enumerate(accepted):
                     if isinstance(raw_res, dict):
                         res_raw = raw_res.get(order) or raw_res.get(" ".join(order.split()[:2]))
@@ -262,7 +262,7 @@ class GameHistory:
                     out_lines.append(f"    {order} ({tag})")
                     seen_ok.add(_norm_keep(order))
 
-                # 2️⃣ invalid submissions
+                # invalid submissions
                 for k in sorted(set(sub_norm) - seen_ok):
                     out_lines.append(f"    {sub_norm[k]} (Rejected by engine: invalid)")
 
@@ -333,6 +333,13 @@ class GameHistory:
 
         # Take the most recent 'limit' messages
         return messages_to_power[-limit:] if messages_to_power else []
+
+    def get_messages_by_phase(self, phase_name: str) -> List[Message]:
+        """Return all Message objects recorded for the given phase."""
+        phase = self._get_phase(phase_name)
+        if phase is None:
+            return []
+        return list(phase.messages)
 
     def get_ignored_messages_by_power(self, sender_name: str, num_phases: int = 3) -> Dict[str, List[Dict[str, str]]]:
         """

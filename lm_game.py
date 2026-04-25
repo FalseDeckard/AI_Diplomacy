@@ -20,7 +20,7 @@ os.environ["GRPC_POLL_STRATEGY"] = "poll"  # Use 'poll' for macOS compatibility
 
 from diplomacy import Game
 
-from ai_diplomacy.utils import get_valid_orders, gather_possible_orders, parse_prompts_dir_arg
+from ai_diplomacy.utils import get_valid_orders, gather_possible_orders, parse_prompts_dir_arg, log_promise_event
 from ai_diplomacy.negotiations import conduct_negotiations
 from ai_diplomacy.planning import planning_phase
 from ai_diplomacy.game_history import GameHistory, Phase
@@ -132,8 +132,9 @@ def _append_phase_reports(report_path: str, phase_obj: Optional[Phase], game: Ga
                     },
                     "phase_result_diary": phase_obj.phase_result_diaries.get(power_name),
                 }
-                fp.write(json.dumps(record, ensure_ascii=False, indent=2))
-                fp.write("\n\n")
+                # One JSON object per line — strict JSONL format
+                fp.write(json.dumps(record, ensure_ascii=False))
+                fp.write("\n")
     except OSError as exc:
         logger.error("Failed to write phase report for %s: %s", phase_obj.name, exc)
 
@@ -288,7 +289,7 @@ async def main():
         config.USE_UNFORMATTED_PROMPTS = False
         logger.info("Using original single-step formatted prompts")
 
-    if args.max_year == None:
+    if args.max_year is None:
         if args.end_at_phase:
             # infer the max year
             args.max_year = int(args.end_at_phase[1:5])
@@ -344,6 +345,7 @@ async def main():
     game_file_name = "lmvsgame.json"
     game_file_path = os.path.join(run_dir, game_file_name)
     llm_log_file_path = os.path.join(run_dir, "llm_responses.csv")
+    promise_log_file_path = os.path.join(run_dir, "promise_events.jsonl")
     model_error_stats = defaultdict(lambda: {"conversation_errors": 0, "order_decoding_errors": 0})
 
     # --- 3. Initialize or Load Game State ---
@@ -398,7 +400,7 @@ async def main():
         if current_short_phase.endswith("M"):
             # 1) Intent: analyze negotiations and declare high-level intent before any new conversations
             neg_diary_tasks = [
-                agent.generate_negotiation_diary_entry(game, game_history, llm_log_file_path)
+                agent.generate_negotiation_diary_entry(game, game_history, llm_log_file_path, promise_log_file_path)
                 for agent in agents.values() if not game.powers[agent.power_name].is_eliminated()
             ]
             if neg_diary_tasks:
@@ -522,7 +524,10 @@ async def main():
         
         # Phase Result Diary Entries
         phase_result_diary_tasks = [
-            agent.generate_phase_result_diary_entry(game, game_history, phase_summary, all_orders_this_phase, llm_log_file_path)
+            agent.generate_phase_result_diary_entry(
+                game, game_history, phase_summary, all_orders_this_phase,
+                llm_log_file_path, promise_log_file_path,
+            )
             for agent in agents.values() if not game.powers[agent.power_name].is_eliminated()
         ]
         if phase_result_diary_tasks:
