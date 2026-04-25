@@ -1,14 +1,14 @@
 from dotenv import load_dotenv
 import logging
 import os
-from typing import Dict, List, Tuple, Set, Optional
+from typing import Dict, List, Tuple, Set, Optional, TYPE_CHECKING
 from diplomacy import Game
 import csv
-from typing import TYPE_CHECKING
 import random
 import string
 import json
 import asyncio
+from datetime import datetime, timezone
 from openai import RateLimitError, APIConnectionError, APITimeoutError
 import aiohttp
 import requests
@@ -54,7 +54,7 @@ def log_llm_request_jsonl(
     """Log a full LLM request payload to JSONL for auditing/replay."""
     try:
         record = {
-            "ts": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.now(timezone.utc).isoformat(),
             "provider": provider,
             "model": model,
             "request_id": request_id,
@@ -82,7 +82,7 @@ def log_llm_output_jsonl(
     """Log a full LLM output text to JSONL, linked by request_id."""
     try:
         record = {
-            "ts": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.now(timezone.utc).isoformat(),
             "provider": provider,
             "model": model,
             "request_id": request_id,
@@ -111,7 +111,7 @@ def log_llm_io_jsonl(
     """Log an input-output pair in a single JSONL record."""
     try:
         record = {
-            "ts": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.now(timezone.utc).isoformat(),
             "provider": provider,
             "model": model,
             "request_id": request_id,
@@ -125,6 +125,47 @@ def log_llm_io_jsonl(
     except Exception as e:
         logger.error(f"Failed to log LLM IO pair: {e}")
 
+
+def log_promise_event(
+    log_path: str | Path,
+    *,
+    event_type: str,
+    phase: str,
+    power: str,
+    recipient: str | None = None,
+    description: str,
+    confidence: str = "medium",
+    source: str = "diary",
+    extra: dict | None = None,
+):
+    """
+    Append one structured promise/betrayal event to a lightweight JSONL tracking log.
+
+    event_type values:
+      "promise_made"   — agent said it will do something specific to a recipient
+      "deceptive_intent" — diary shows intent to break a promise already made
+      "promise_broken" — phase result diary notes a betrayal vs. negotiated agreement
+      "promise_kept"   — phase result diary confirms the agent honoured a commitment
+
+    This log is written during gameplay so post-game analyze_lies.py can quickly
+    pinpoint suspicious (phase, power) pairs without re-running full LLM analysis.
+    """
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event_type": event_type,
+        "phase": phase,
+        "power": power,
+        "recipient": recipient,
+        "description": description,
+        "confidence": confidence,
+        "source": source,
+    }
+    if extra:
+        record["extra"] = extra
+    append_jsonl(log_path, record)
+    logger.info(
+        f"[PROMISE-LOG] {event_type} | {power} → {recipient or 'ALL'} | {phase} | {description[:80]}"
+    )
 
 
 def atomic_write_json(data: dict, filepath: str):
@@ -165,20 +206,6 @@ def assign_models_to_powers() -> Dict[str, str]:
                     openrouter-deepseek/deepseek-prover-v2:free, openrouter-meta-llama/llama-4-maverick:free, openrouter-nvidia/llama-3.3-nemotron-super-49b-v1:free,
                     openrouter-google/gemma-3-12b-it:free, openrouter-google/gemini-2.5-flash-preview-05-20
     """
-
-    # POWER MODELS
-    """
-    return {
-        "AUSTRIA": "openrouter-google/gemini-2.5-flash-preview-05-20",
-        "ENGLAND": "openrouter-moonshotai/kimi-dev-72b:free",
-        "FRANCE": "together-arcee-ai/AFM-4.5B-Preview",
-        "GERMANY": "openrouter-google/gemini-2.5-flash-lite-preview-06-17",
-        "ITALY": "together-lgai/exaone-deep-32b",
-        "RUSSIA": "deepseek-reasoner",
-        "TURKEY": "openrouter-cohere/command-a",
-    }
-    """
-    # TEST MODELS
 
     return {
         "AUSTRIA": "openrouter-mistralai/mistral-small-3.2-24b-instruct",
