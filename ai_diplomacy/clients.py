@@ -2,8 +2,9 @@ import os
 import json
 import re
 import logging
-import ast  # For literal_eval in JSON fallback parsing
-import aiohttp  # For direct HTTP requests to Responses API
+import ast
+import uuid
+import aiohttp
 
 from typing import List, Dict, Optional, Tuple, NamedTuple
 from dotenv import load_dotenv
@@ -815,19 +816,19 @@ class OpenAIClient(BaseModelClient):
             prompt_with_cta = f"{prompt}\n\nPROVIDE YOUR RESPONSE BELOW:"
 
             # Generate request ID (used for logging correlation)
-            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
-            
+            _req_id = str(uuid.uuid4()) if not self.disable_logging else None
+            _payload = {
+                "endpoint": f"{self.base_url}/chat/completions",
+                "messages": [
+                    {"role": "system", "content": system_prompt_content},
+                    {"role": "user", "content": prompt_with_cta},
+                ],
+                "temperature": temperature,
+                "max_tokens": self.max_tokens,
+            }
+
             # Log request payload
             if not self.disable_logging and config and getattr(config, "log_file_path", None):
-                _payload = {
-                    "endpoint": f"{self.base_url}/chat/completions",
-                    "messages": [
-                        {"role": "system", "content": system_prompt_content},
-                        {"role": "user", "content": prompt_with_cta},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": self.max_tokens,
-                }
                 log_llm_request_jsonl(
                     log_path=str(config.log_file_path).replace(".txt", "_requests.jsonl"),
                     provider="openai",
@@ -913,7 +914,7 @@ class ClaudeClient(BaseModelClient):
             system_prompt_content = self.system_prompt
 
             # Generate request ID (used for logging correlation)
-            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            _req_id = str(uuid.uuid4()) if not self.disable_logging else None
             
             # Log request payload
             if not self.disable_logging and config and getattr(config, "log_file_path", None):
@@ -1000,7 +1001,7 @@ class GeminiClient(BaseModelClient):
             generation_config = genai.types.GenerationConfig(temperature=temperature, max_output_tokens=self.max_tokens)
             
             # Generate request ID (used for logging correlation)
-            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            _req_id = str(uuid.uuid4()) if not self.disable_logging else None
             
             # Log request payload
             if not self.disable_logging and config and getattr(config, "log_file_path", None):
@@ -1075,7 +1076,7 @@ class DeepSeekClient(BaseModelClient):
             system_prompt_content = self.system_prompt
 
             # Generate request ID (used for logging correlation)
-            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            _req_id = str(uuid.uuid4()) if not self.disable_logging else None
             
             # Log request payload
             if not self.disable_logging and config and getattr(config, "log_file_path", None):
@@ -1200,7 +1201,7 @@ class OpenAIResponsesClient(BaseModelClient):
             timeout = aiohttp.ClientTimeout(total=90, connect=15, sock_connect=15, sock_read=75)
             
             # Generate request ID (used for logging correlation)
-            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            _req_id = str(uuid.uuid4()) if not self.disable_logging else None
             
             # Log request payload
             if not self.disable_logging and config and getattr(config, "log_file_path", None):
@@ -1273,10 +1274,73 @@ class OpenAIResponsesClient(BaseModelClient):
                     else:
                         raise
 
-                    # Extract the text from the nested response structure
-                    # 1) Direct 'output_text'
-                    if isinstance(response_data, dict) and response_data.get("output_text"):
-                        _text = str(response_data.get("output_text")).strip()
+                # Extract the text from the nested response structure
+                # 1) Direct 'output_text'
+                if isinstance(response_data, dict) and response_data.get("output_text"):
+                    _text = str(response_data.get("output_text")).strip()
+                    if config and getattr(config, "log_file_path", None):
+                        log_llm_output_jsonl(
+                            log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                            provider="openai-responses",
+                            model=self.model_name,
+                            request_id=_req_id,
+                            output_text=_text,
+                        )
+                        log_llm_io_jsonl(
+                            log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                            provider="openai-responses",
+                            model=self.model_name,
+                            request_id=_req_id,
+                            payload={**payload},
+                            output_text=_text,
+                        )
+                    return _text
+
+                # 2) Newer Responses: top-level 'output' with message parts
+                outputs = response_data.get("output") if isinstance(response_data, dict) else None
+                if isinstance(outputs, list):
+                    texts = []
+                    for item in outputs:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("type") == "message":
+                            for part in item.get("content", []) or []:
+                                if isinstance(part, dict) and part.get("type") in ("output_text", "text"):
+                                    if part.get("text"):
+                                        texts.append(part.get("text"))
+                    if texts:
+                        _text = "\n".join(t.strip() for t in texts if t).strip()
+                        if config and getattr(config, "log_file_path", None):
+                            log_llm_output_jsonl(
+                                log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
+                                provider="openai-responses",
+                                model=self.model_name,
+                                request_id=_req_id,
+                                output_text=_text,
+                                power=self._log_ctx.get("power"),
+                                phase=self._log_ctx.get("phase"),
+                                response_type=self._log_ctx.get("response_type"),
+                            )
+                            log_llm_io_jsonl(
+                                log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
+                                provider="openai-responses",
+                                model=self.model_name,
+                                request_id=_req_id,
+                                payload={**payload},
+                                output_text=_text,
+                                power=self._log_ctx.get("power"),
+                                phase=self._log_ctx.get("phase"),
+                                response_type=self._log_ctx.get("response_type"),
+                            )
+                        return _text
+
+                # 3) Fallback: Chat-like 'choices'
+                choices = response_data.get("choices") if isinstance(response_data, dict) else None
+                if isinstance(choices, list) and choices:
+                    msg = choices[0].get("message", {})
+                    content = msg.get("content") if isinstance(msg, dict) else None
+                    if content:
+                        _text = str(content).strip()
                         if config and getattr(config, "log_file_path", None):
                             log_llm_output_jsonl(
                                 log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
@@ -1295,70 +1359,7 @@ class OpenAIResponsesClient(BaseModelClient):
                             )
                         return _text
 
-                    # 2) Newer Responses: top-level 'output' with message parts
-                    outputs = response_data.get("output") if isinstance(response_data, dict) else None
-                    if isinstance(outputs, list):
-                        texts = []
-                        for item in outputs:
-                            if not isinstance(item, dict):
-                                continue
-                            if item.get("type") == "message":
-                                for part in item.get("content", []) or []:
-                                    if isinstance(part, dict) and part.get("type") in ("output_text", "text"):
-                                        if part.get("text"):
-                                            texts.append(part.get("text"))
-                        if texts:
-                            _text = "\n".join(t.strip() for t in texts if t).strip()
-                            if config and getattr(config, "log_file_path", None):
-                                log_llm_output_jsonl(
-                                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
-                                    provider="openai-responses",
-                                    model=self.model_name,
-                                    request_id=_req_id,
-                                    output_text=_text,
-                                    power=self._log_ctx.get("power"),
-                                    phase=self._log_ctx.get("phase"),
-                                    response_type=self._log_ctx.get("response_type"),
-                                )
-                                log_llm_io_jsonl(
-                                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
-                                    provider="openai-responses",
-                                    model=self.model_name,
-                                    request_id=_req_id,
-                                    payload={**payload},
-                                    output_text=_text,
-                                    power=self._log_ctx.get("power"),
-                                    phase=self._log_ctx.get("phase"),
-                                    response_type=self._log_ctx.get("response_type"),
-                                )
-                            return _text
-
-                    # 3) Fallback: Chat-like 'choices'
-                    choices = response_data.get("choices") if isinstance(response_data, dict) else None
-                    if isinstance(choices, list) and choices:
-                        msg = choices[0].get("message", {})
-                        content = msg.get("content") if isinstance(msg, dict) else None
-                        if content:
-                            _text = str(content).strip()
-                            if config and getattr(config, "log_file_path", None):
-                                log_llm_output_jsonl(
-                                    log_path=str(config.log_file_path).replace(".txt", "_responses.jsonl"),
-                                    provider="openai-responses",
-                                    model=self.model_name,
-                                    request_id=_req_id,
-                                    output_text=_text,
-                                )
-                                log_llm_io_jsonl(
-                                    log_path=str(config.log_file_path).replace(".txt", "_io.jsonl"),
-                                    provider="openai-responses",
-                                    model=self.model_name,
-                                    request_id=_req_id,
-                                    payload={**payload},
-                                    output_text=_text,
-                                )
-                            return _text
-
-                    raise ValueError(f"[{self.model_name}] Unrecognized Responses API structure: {str(response_data)[:200]}")
+                raise ValueError(f"[{self.model_name}] Unrecognized Responses API structure: {str(response_data)[:200]}")
 
         except aiohttp.ClientError as e:
             logger.error(f"[{self.model_name}] HTTP client error in generate_response: {e}")
@@ -1399,7 +1400,7 @@ class OpenRouterClient(BaseModelClient):
 
             # Prepare standard OpenAI-compatible request
             # Generate request ID (used for logging correlation)
-            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            _req_id = str(uuid.uuid4()) if not self.disable_logging else None
             
             # Log request payload
             if not self.disable_logging and config and getattr(config, "log_file_path", None):
@@ -1508,7 +1509,7 @@ class TogetherAIClient(BaseModelClient):
             # which is self.model_name as set by BaseModelClient.__init__
             
             # Generate request ID (used for logging correlation)
-            _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+            _req_id = str(uuid.uuid4()) if not self.disable_logging else None
             
             # Log request payload
             if not self.disable_logging and config and getattr(config, "log_file_path", None):
@@ -1633,7 +1634,7 @@ class RequestsOpenAIClient(BaseModelClient):
         loop = asyncio.get_running_loop()
         
         # Generate request ID (used for logging correlation)
-        _req_id = str(__import__("uuid").uuid4()) if not self.disable_logging else None
+        _req_id = str(uuid.uuid4()) if not self.disable_logging else None
         
         try:
             if not self.disable_logging and config and getattr(config, "log_file_path", None):
